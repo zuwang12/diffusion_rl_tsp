@@ -1,0 +1,57 @@
+# general
+seed : 2024
+deterministic : True
+allow_tf32 : True
+reward_fn : 'tsp'
+model : "runwayml/stable-diffusion-v1-5"
+revision : "main"
+
+# sample
+num_steps : 50
+batch_size_sample : 1
+num_batches_per_epoch : 1
+eta : 1.0
+
+# train
+timestep_fraction : 1.0
+gradient_accumulation_steps : 1
+num_epochs : 4
+num_inner_epochs : 1
+
+learning_rate : 0.0003 #3e-4
+adam_beta1 : 0.9
+adam_beta2 : 0.999
+adam_weight_decay : 0.0001 #1e-4
+adam_epsilon : 0.00000001 #1e-8
+batch_size_train : 1
+adv_clip_max : 5
+clip_range : 0.0001 #1e-4
+max_grad_norm : 1.0
+
+# image
+img_size : 64
+point_radius : 2
+point_color : 1
+point_circle : True
+line_thickness : 2
+line_color : 0.5
+
+# scheduler
+# num_train_timesteps : 1000
+# beta_start : 0.00085
+# beta_end : 0.012
+# beta_schedule : 'scaled_linear'
+# trained_betas : null
+# clip_sample : False
+# set_alpha_to_one : False
+# steps_offset : 1
+# prediction_type : 'epsilon'
+# thresholding : False
+# dynamic_thresholding_ratio : 0.995
+# clip_sample_range : 1.0
+# sample_max_value : 1.0
+# timestep_spacing : 'leading'
+# rescale_betas_zero_snr : False
+# skip_prk_steps : True
+# _class_name : 'PNDMScheduler'
+# _diffusers_version : '0.6.0'

@@ -1,0 +1,8 @@
+# files
+*.csv
+*.txt
+
+# directory
+__pycache__
+.vscode
+ckpt

@@ -1,3 +1,10 @@
+# Copied from https://github.com/huggingface/diffusers/blob/fc6acb6b97e93d58cb22b5fee52d884d77ce84d8/src/diffusers/schedulers/scheduling_ddim.py
+# with the following modifications:
+# - It computes and returns the log prob of `prev_sample` given the UNet prediction.
+# - Instead of `variance_noise`, it takes `prev_sample` as an optional argument. If `prev_sample` is provided,
+#   it uses it to compute the log prob.
+# - Timesteps can be a batched torch.Tensor.
+
 from typing import Optional, Tuple, Union
 
 import math
@@ -34,13 +41,38 @@ def ddim_step_with_logprob(
     model_output: torch.FloatTensor,
     timestep: int,
     sample: torch.FloatTensor,
-    model = None,
+    model,
     eta: float = 0.0,
     use_clipped_model_output: bool = False,
     generator=None,
     prev_sample: Optional[torch.FloatTensor] = None,
 ) -> Union[DDIMSchedulerOutput, Tuple]:
-    
+    """
+    Predict the sample at the previous timestep by reversing the SDE. Core function to propagate the diffusion
+    process from the learned model outputs (most often the predicted noise).
+
+    Args:
+        model_output (`torch.FloatTensor`): direct output from learned diffusion model.
+        timestep (`int`): current discrete timestep in the diffusion chain.
+        sample (`torch.FloatTensor`):
+            current instance of sample being created by diffusion process.
+        eta (`float`): weight of noise for added noise in diffusion step.
+        use_clipped_model_output (`bool`): if `True`, compute "corrected" `model_output` from the clipped
+            predicted original sample. Necessary because predicted original sample is clipped to [-1, 1] when
+            `self.config.clip_sample` is `True`. If no clipping has happened, "corrected" `model_output` would
+            coincide with the one provided as input and `use_clipped_model_output` will have not effect.
+        generator: random number generator.
+        variance_noise (`torch.FloatTensor`): instead of generating noise for the variance using `generator`, we
+            can directly provide the noise for the variance itself. This is useful for methods such as
+            CycleDiffusion. (https://arxiv.org/abs/2210.05559)
+        return_dict (`bool`): option for returning tuple rather than DDIMSchedulerOutput class
+
+    Returns:
+        [`~schedulers.scheduling_utils.DDIMSchedulerOutput`] or `tuple`:
+        [`~schedulers.scheduling_utils.DDIMSchedulerOutput`] if `return_dict` is True, otherwise a `tuple`. When
+        returning a tuple, the first element is the sample tensor.
+
+    """
     assert isinstance(self, DDIMScheduler)
     if self.num_inference_steps is None:
         raise ValueError(
@@ -81,10 +113,33 @@ def ddim_step_with_logprob(
 
     # 3. compute predicted original sample from predicted noise also called
     # "predicted x_0" of formula (12) from https://arxiv.org/pdf/2010.02502.pdf
+    if self.config.prediction_type == "epsilon": #TODO: why there are various type?
+        pred_original_sample = (
+            sample - beta_prod_t ** (0.5) * model_output
+        ) / alpha_prod_t ** (0.5)
+        pred_epsilon = model_output
+    elif self.config.prediction_type == "sample":
+        pred_original_sample = model_output
+        pred_epsilon = (
+            sample - alpha_prod_t ** (0.5) * pred_original_sample
+        ) / beta_prod_t ** (0.5)
+    elif self.config.prediction_type == "v_prediction":
+        pred_original_sample = (alpha_prod_t**0.5) * sample - (
+            beta_prod_t**0.5
+        ) * model_output
+        pred_epsilon = (alpha_prod_t**0.5) * model_output + (
+            beta_prod_t**0.5
+        ) * sample
+    else:
+        raise ValueError(
+            f"prediction_type given as {self.config.prediction_type} must be one of `epsilon`, `sample`, or"
+            " `v_prediction`"
+        )
+        
     pred_original_sample = model.encode()
     pred_epsilon = model_output
 
-    # 4. Clip or threshold "predicted x_0"
+    # 4. Clip or threshold "predicted x_0" # TODO: why this is needed?
     if self.config.thresholding:
         pred_original_sample = self._threshold_sample(pred_original_sample)
     elif self.config.clip_sample:

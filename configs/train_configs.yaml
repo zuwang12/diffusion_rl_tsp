@@ -2,15 +2,21 @@
 seed : 2024
 deterministic : True
 allow_tf32 : True
-reward_fn : 'tsp'
+reward_type : 'tsp'
 model : "runwayml/stable-diffusion-v1-5"
 revision : "main"
+num_processes : 1
+process_index : 0
+save_result : False
+save_freq : 50
+num_cities : 20
+run_name : 'test'
 
 # sample
 num_steps : 50
 batch_size_sample : 1
 num_batches_per_epoch : 1
-eta : 1.0
+eta : 1.0 #TODO: check this randomness
 
 # train
 timestep_fraction : 1.0

@@ -1,6 +1,7 @@
 # files
 *.csv
 *.txt
+*.ipynb
 
 # directory
 __pycache__

@@ -1,104 +1,119 @@
-from diffusers import StableDiffusionPipeline, DDIMScheduler
-
-import torch
-
-import argparse
-import yaml
-from munch import munchify
-import numpy as np
-import tqdm
-from functools import partial
-import time
+import datetime
 from concurrent import futures
+import time
+from absl import app, flags
+from ml_collections import config_flags
+from functools import partial
+import tqdm
+import numpy as np
 import pandas as pd
 import gc
+import torch
+from torchvision.utils import save_image
 
 from model.unet import UNetModel
 from model.TSPModel import Model_x0, TSPDataset
+
+from diffusers import StableDiffusionPipeline, DDIMScheduler
+
+import ddpo_pytorch.prompts
+import ddpo_pytorch.rewards
+from ddpo_pytorch.diffusers_patch.pipeline_with_logprob import pipeline_with_logprob
+from ddpo_pytorch.diffusers_patch.ddim_with_logprob import ddim_step_with_logprob
+
 from utils import TSP_2opt
 
-import reward_fns
-from pipeline_with_logprob import pipeline_with_logprob
-from ddim_with_logprob import ddim_step_with_logprob
+seed = 2024
+deterministic = True
 
-def load_config():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config_name", type=str, default="tsp", help="which training config to use")
-    args = parser.parse_args()
-    # mapping from config name to config path
-    config_mapping = {"tsp":  "./configs/train_configs.yaml"}
-    with open(config_mapping[args.config_name]) as file:
-        config_dict= yaml.safe_load(file)
-        config = munchify(config_dict)
-    return config
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
+if deterministic:
+	torch.backends.cudnn.deterministic = True
+	torch.backends.cudnn.benchmark = False
 
+device = ('cuda' if torch.cuda.is_available() else 'cpu')
 
-if __name__=='__main__':
-    config = load_config()
-    tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
-    device = ('cuda' if torch.cuda.is_available() else 'cpu')
-    
+tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
+FLAGS = flags.FLAGS
+config_flags.DEFINE_config_file("config", "config/base.py", "Training configuration.")
+
+def main(_):
+    # basic Accelerate and logging setup
+    config = FLAGS.config
+
+    unique_id = datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
+    if not config.run_name:
+        config.run_name = unique_id
+    else:
+        config.run_name += "_" + unique_id
+
     config.file_name = f'tsp{config.num_cities}_test_concorde.txt'
-    config.result_file_name = f'ours_tsp{config.num_cities}_test_epoch{config.num_epochs}_inner{config.num_inner_epochs}_{config.run_name}.csv'
+    config.result_file_name = f'ours_tsp{config.num_cities}_test_epoch{config.num_epochs}_inner{config.train.num_inner_epochs}_{config.run_name}.csv'
     
+    # number of timesteps within each trajectory to train on
+    num_train_timesteps = int(config.sample.num_steps * config.train.timestep_fraction)
+
+    # load scheduler, tokenizer and models.
+    pipeline = StableDiffusionPipeline.from_pretrained(
+        config.pretrained.model, revision=config.pretrained.revision
+    )
     
-    ################## fix seed ####################
-    np.random.seed(config.seed)
-    torch.manual_seed(config.seed)
-    torch.cuda.manual_seed_all(config.seed)
-    if config.deterministic:
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-    ################## fix seed ####################
-    
-    num_train_timesteps = int(config.num_steps * config.timestep_fraction)
-    pipeline = StableDiffusionPipeline.from_pretrained(config.model, revision=config.revision)
-    
-    ################## Set model, scheduler ##################
-    unet = UNetModel(image_size=config.img_size, in_channels=1, out_channels=1, 
+    ########### add prior Unet ###########
+    unet = UNetModel(image_size=config.image.img_size, in_channels=1, out_channels=1, 
                                 model_channels=64, num_res_blocks=2, channel_mult=(1,2,3,4),
                                 attention_resolutions=[16,8], num_heads=4).to(device)
-    unet.load_state_dict(torch.load(f'./ckpt/unet50_64_8.pth'))
+    unet.load_state_dict(torch.load(f'Checkpoint/unet50_64_8.pth'))
     unet.to(device)
-    unet.eval()
+
     pipeline.unet = unet
     print('Loaded model')
+    ########### add prior Unet ###########
     
+    # freeze parameters of models to save more memory
     del pipeline.vae, pipeline.text_encoder
     pipeline.unet.requires_grad_(False)
     pipeline.safety_checker = None
 
+    # switch to DDIM scheduler
     pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
     unet = pipeline.unet
 
     # Enable TF32 for faster training on Ampere GPUs
     if config.allow_tf32: # TODO: need to change
         torch.backends.cuda.matmul.allow_tf32 = True
-    ################## Set model, scheduler ##################
-    
+
     optimizer_cls = torch.optim.AdamW
         
+    ############ add dataloader ###########
     test_dataset = TSPDataset(data_file=f'./data/{config.file_name}',
-                              img_size = config.img_size,
-                              point_radius = config.point_radius,
-                              point_color = config.point_color,
-                              point_circle = config.point_circle,
-                              line_thickness = config.line_thickness,
-                              line_color = config.line_color)
-    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=config.batch_size_sample, shuffle=False)
+                              img_size = config.image.img_size,
+                              point_radius = config.image.point_radius,
+                              point_color = config.image.point_color,
+                              point_circle = config.image.point_circle,
+                              line_thickness = config.image.line_thickness,
+                              line_color = config.image.line_color)
+    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=config.sample.batch_size, shuffle=False)
     num_points = test_dataset.rasterize(0)[1].shape[0]
     print('Created dataset')
     
-    solved_costs, init_costs, gt_costs, final_gaps, init_gaps, epochs = [], [], [], [], [], []
-
+    solved_costs = []
+    init_costs = []
+    gt_costs = []
+    final_gaps = []
+    init_gaps = []
+    epochs = []
+    
     for (img, sample_idx) in tqdm(test_dataloader):
         ########### add prior model & prepare image ###########
         model = Model_x0( # TODO: From define -> To reinit
-            batch_size = config.batch_size_sample, 
+            batch_size = config.sample.batch_size, 
             num_points = num_points, 
-            img_size = config.img_size,
-            line_color = config.line_color,
-            line_thickness = config.line_thickness,).to(device) #TODO: check batch_size from sample vs train
+            img_size = config.image.img_size,
+            line_color = config.image.line_color,
+            line_thickness = config.image.line_thickness,).to(device) #TODO: check batch_size from sample vs train
+        
         ########### add prior model & prepare image ###########
         _, points, gt_tour = test_dataset.rasterize(sample_idx[0].item())
         solver = TSP_2opt(points)
@@ -116,68 +131,74 @@ if __name__=='__main__':
         
         optimizer = optimizer_cls(
             model.parameters(), # unet.parameters()
-            lr=config.learning_rate,
-            betas=(config.adam_beta1, config.adam_beta2),
-            weight_decay=config.adam_weight_decay,
-            eps=config.adam_epsilon
-            )
-        
-        reward_fn = getattr(reward_fns, config.reward_type)()
+            lr=config.train.learning_rate,
+            betas=(config.train.adam_beta1, config.train.adam_beta2),
+            weight_decay=config.train.adam_weight_decay,
+            eps=config.train.adam_epsilon,
+        )
+
+        reward_fn = getattr(ddpo_pytorch.rewards, config.reward_fn)()
+ 
+        # executor to perform callbacks asynchronously. this is beneficial for the llava callbacks which makes a request to a
+        # remote server running llava inference. TODO: llava 안쓰면?
         executor = futures.ThreadPoolExecutor(max_workers=2)
 
         # Train!
         samples_per_epoch = (
-            config.batch_size_sample
-            * config.num_processes
-            * config.num_batches_per_epoch
+            config.sample.batch_size * config.sample.num_batches_per_epoch
         )
         total_train_batch_size = (
-            config.batch_size_train
-            * config.num_processes
-            * config.gradient_accumulation_steps
+            config.train.batch_size * config.train.gradient_accumulation_steps
         )
+
+        assert config.sample.batch_size >= config.train.batch_size
+        assert config.sample.batch_size % config.train.batch_size == 0
+        assert samples_per_epoch % total_train_batch_size == 0
+
+        first_epoch = 0
         
         final_solved_cost = 10**10
         final_gap = 0
-        for epoch in range(config.num_epochs):
+        
+        pipeline.unet.eval()
+        for epoch in range(first_epoch, config.num_epochs):
             #################### SAMPLING ####################
             samples = []
-            for i in range(config.num_batches_per_epoch):
-                images, _, latents, log_probs = pipeline_with_logprob(
-                    pipeline,
-                    num_inference_steps=config.num_steps,
-                    eta=config.eta,
-                    output_type="latent", # output_type="pt"
-                    model = model,
-                    device = device
-                )
+            images, _, latents, log_probs = pipeline_with_logprob( # TODO: need to be modified
+                pipeline,
+                num_inference_steps=config.sample.num_steps,
+                eta=config.sample.eta,
+                output_type="latent", # output_type="pt"
+                model = model,
+                device = device
+            )
 
-                latents = torch.stack(
-                    latents, dim=1
-                )  # (batch_size, num_steps + 1, 4, 64, 64)
-                log_probs = torch.stack(log_probs, dim=1)  # (batch_size, num_steps, 1)
-                timesteps = pipeline.scheduler.timesteps.repeat(
-                    config.batch_size_sample, 1
-                )  # (batch_size, num_steps)
+            latents = torch.stack(
+                latents, dim=1
+            )  # (batch_size, num_steps + 1, 4, 64, 64)
+            log_probs = torch.stack(log_probs, dim=1)  # (batch_size, num_steps, 1)
+            timesteps = pipeline.scheduler.timesteps.repeat(
+                config.sample.batch_size, 1
+            )  # (batch_size, num_steps)
 
-                # compute rewards asynchronously
-                rewards = executor.submit(reward_fn, points, model.latent, dists)
-                # yield to to make sure reward computation starts
-                time.sleep(0)
+            # compute rewards asynchronously
+            rewards = executor.submit(reward_fn, points, model.latent, dists)
+            # yield to to make sure reward computation starts
+            time.sleep(0)
 
-                samples.append(
-                    {
-                        "timesteps": timesteps,
-                        "latents": latents[
-                            :, :-1
-                        ],  # each entry is the latent before timestep t
-                        "next_latents": latents[
-                            :, 1:
-                        ],  # each entry is the latent after timestep t
-                        "log_probs": log_probs,
-                        "rewards": rewards,
-                    }
-                )
+            samples.append(
+                {
+                    "timesteps": timesteps,
+                    "latents": latents[
+                        :, :-1
+                    ],  # each entry is the latent before timestep t
+                    "next_latents": latents[
+                        :, 1:
+                    ],  # each entry is the latent after timestep t
+                    "log_probs": log_probs,
+                    "rewards": rewards,
+                }
+            )
 
             # wait for all rewards to be computed
             for sample in samples:
@@ -209,16 +230,21 @@ if __name__=='__main__':
             # ungather advantages; we only need to keep the entries corresponding to the samples on this process
             samples["advantages"] = (
                 torch.as_tensor(advantages)
-                .reshape(config.num_processes, -1)[config.process_index]
+                .reshape(1, -1)[0]
                 .to(device)
             )
 
             del samples["rewards"]
 
             total_batch_size, num_timesteps = samples["timesteps"].shape
+            assert (
+                total_batch_size
+                == config.sample.batch_size * config.sample.num_batches_per_epoch
+            )
+            assert num_timesteps == config.sample.num_steps
 
             #################### TRAINING ####################
-            for inner_epoch in range(config.num_inner_epochs):
+            for inner_epoch in range(config.train.num_inner_epochs):
                 # shuffle samples along batch dimension
                 perm = torch.randperm(total_batch_size, device=device)
                 samples = {k: v[perm] for k, v in samples.items()}
@@ -238,7 +264,7 @@ if __name__=='__main__':
 
                 # rebatch for training
                 samples_batched = {
-                    k: v.reshape(-1, config.batch_size_train, *v.shape[1:])
+                    k: v.reshape(-1, config.train.batch_size, *v.shape[1:])
                     for k, v in samples.items()
                 }
 
@@ -247,6 +273,8 @@ if __name__=='__main__':
                     dict(zip(samples_batched, x)) for x in zip(*samples_batched.values())
                 ]
 
+                # train
+                model.train()
                 for i, sample in list(enumerate(samples_batched)):
                     for j in range(num_train_timesteps):
                         noise_pred = unet(
@@ -254,31 +282,33 @@ if __name__=='__main__':
                             sample["timesteps"][:, j],
                         )
                         
+                        # compute the log prob of next_latents given latents under the current model
                         _, log_prob = ddim_step_with_logprob(
                             pipeline.scheduler,
                             noise_pred,
                             sample["timesteps"][:, j],
                             sample["latents"][:, j],
                             model,
-                            eta=config.eta,
+                            eta=config.sample.eta,
                             prev_sample=sample["next_latents"][:, j],
                         )
 
                         # ppo logic
                         advantages = torch.clamp(
                             sample["advantages"],
-                            -config.adv_clip_max,
-                            config.adv_clip_max,
+                            -config.train.adv_clip_max,
+                            config.train.adv_clip_max,
                         )
                         ratio = torch.exp(log_prob - sample["log_probs"][:, j])
                         unclipped_loss = -advantages * ratio
                         clipped_loss = -advantages * torch.clamp(
                             ratio,
-                            1.0 - config.clip_range,
-                            1.0 + config.clip_range,
+                            1.0 - config.train.clip_range,
+                            1.0 + config.train.clip_range,
                         )
                         loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
 
+                        # backward pass
                         loss.backward()
                         optimizer.step()
                         optimizer.zero_grad()
@@ -316,3 +346,6 @@ if __name__=='__main__':
         })
         if config.save_result:
             result_df.to_csv(f'./Results/{config.result_file_name}', index=False)
+
+if __name__ == "__main__":
+    app.run(main)

@@ -1,7 +1,12 @@
 import scipy
 import numpy as np
 import cv2
+import math
+from tqdm import tqdm
+
 import torch
+import torch.nn.functional as F
+from model.diffusion import GaussianDiffusion
 
 class TSP_2opt():
     def __init__(self, points):
@@ -40,6 +45,32 @@ class TSP_2opt():
             if self.evaluate(result) < self.evaluate(best):
                 best = result
         return best
+    
+def runlat(model, unet, STEPS, batch_size, device):
+    opt = torch.optim.Adam(model.parameters(), lr=1, betas=(0, 0.9))
+    scheduler = torch.optim.lr_scheduler.LinearLR(opt, start_factor=1, end_factor=0.1, total_iters=1000)
+    diffusion = GaussianDiffusion(T=1000, schedule='linear')
+    # model.latent.data=temp
+
+    steps = STEPS
+    for i in tqdm(range(steps)):
+        t = ((steps-i) + (steps-i)//3*math.cos(i/50))/steps*diffusion.T # Linearly decreasing + cosine
+
+        t = np.clip(t, 1, diffusion.T)
+        t = np.array([t for _ in range(batch_size)]).astype(int)
+
+        # Denoise
+        xt, epsilon = diffusion.sample(model.encode(), t) # get x_{ti} in Algorithm1 - (3 ~ 4)
+        t = torch.from_numpy(t).float().view(batch_size)
+        epsilon_pred = unet(xt.float(), t.to(device))
+
+        loss = F.mse_loss(epsilon_pred, epsilon)
+
+        loss.backward()
+        opt.step()
+        opt.zero_grad()
+        scheduler.step()
+    
     
 def normalize(cost, entropy_reg=0.1, n_iters=20, eps=1e-6):
     # Cost matrix is exp(-lambda*C)

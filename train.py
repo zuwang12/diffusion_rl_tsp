@@ -1,6 +1,7 @@
 from diffusers import StableDiffusionPipeline, DDIMScheduler
 
 import torch
+from torchvision.utils import save_image
 
 import argparse
 import yaml
@@ -15,7 +16,7 @@ import gc
 
 from model.unet import UNetModel
 from model.TSPModel import Model_x0, TSPDataset
-from utils import TSP_2opt
+from utils import TSP_2opt, runlat
 
 import reward_fns
 from pipeline_with_logprob import pipeline_with_logprob
@@ -40,7 +41,7 @@ if __name__=='__main__':
     
     config.file_name = f'tsp{config.num_cities}_test_concorde.txt'
     config.result_file_name = f'ours_tsp{config.num_cities}_test_epoch{config.num_epochs}_inner{config.num_inner_epochs}_{config.run_name}.csv'
-    
+    print(config)
     
     ################## fix seed ####################
     np.random.seed(config.seed)
@@ -55,9 +56,7 @@ if __name__=='__main__':
     pipeline = StableDiffusionPipeline.from_pretrained(config.model, revision=config.revision)
     
     ################## Set model, scheduler ##################
-    unet = UNetModel(image_size=config.img_size, in_channels=1, out_channels=1, 
-                                model_channels=64, num_res_blocks=2, channel_mult=(1,2,3,4),
-                                attention_resolutions=[16,8], num_heads=4).to(device)
+    unet = UNetModel(image_size=config.img_size, in_channels=1, out_channels=1, model_channels=64, num_res_blocks=2, channel_mult=(1,2,3,4), attention_resolutions=[16,8], num_heads=4).to(device)
     unet.load_state_dict(torch.load(f'./ckpt/unet50_64_8.pth'))
     unet.to(device)
     unet.eval()
@@ -65,11 +64,10 @@ if __name__=='__main__':
     print('Loaded model')
     
     del pipeline.vae, pipeline.text_encoder
-    pipeline.unet.requires_grad_(False)
+    # pipeline.unet.requires_grad_(False)
     pipeline.safety_checker = None
 
     pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
-    unet = pipeline.unet
 
     # Enable TF32 for faster training on Ampere GPUs
     if config.allow_tf32: # TODO: need to change
@@ -91,7 +89,7 @@ if __name__=='__main__':
     
     solved_costs, init_costs, gt_costs, final_gaps, init_gaps, epochs = [], [], [], [], [], []
 
-    for (img, sample_idx) in tqdm(test_dataloader):
+    for (img, points, gt_tour, sample_idx) in tqdm(test_dataloader):
         ########### add prior model & prepare image ###########
         model = Model_x0( # TODO: From define -> To reinit
             batch_size = config.batch_size_sample, 
@@ -99,19 +97,22 @@ if __name__=='__main__':
             img_size = config.img_size,
             line_color = config.line_color,
             line_thickness = config.line_thickness,).to(device) #TODO: check batch_size from sample vs train
-        ########### add prior model & prepare image ###########
-        _, points, gt_tour = test_dataset.rasterize(sample_idx[0].item())
+
+        # _, points, gt_tour = test_dataset.rasterize(sample_idx[0].item())
+        points, gt_tour = points.numpy()[0], gt_tour.numpy()[0]
         solver = TSP_2opt(points)
         gt_cost = solver.evaluate([i-1 for i in gt_tour])
         img_query = torch.zeros_like(img)
         img_query[img == 1] = 1
-        model.compute_edge_images(points=points, img_query=img_query)
+        model.compute_edge_images(points=points, img_query=img_query) # Pre-compute edge images
         
         dists = np.zeros_like(model.latent[0].cpu().detach()) # (50, 50)
         for i in range(dists.shape[0]):
             for j in range(dists.shape[0]):
                 dists[i,j] = np.linalg.norm(points[i]-points[j])
-        
+                
+        if config.use_prior_init:
+            runlat(model, unet, STEPS=config.num_steps, batch_size=1, device=device)
         ########### add prior model & prepare image ###########
         
         optimizer = optimizer_cls(
@@ -126,16 +127,8 @@ if __name__=='__main__':
         executor = futures.ThreadPoolExecutor(max_workers=2)
 
         # Train!
-        samples_per_epoch = (
-            config.batch_size_sample
-            * config.num_processes
-            * config.num_batches_per_epoch
-        )
-        total_train_batch_size = (
-            config.batch_size_train
-            * config.num_processes
-            * config.gradient_accumulation_steps
-        )
+        # samples_per_epoch = (config.batch_size_sample * config.num_processes * config.num_batches_per_epoch) # what the hell is this?
+        # total_train_batch_size = (config.batch_size_train * config.num_processes * config.gradient_accumulation_steps) # what the hell is this?
         
         final_solved_cost = 10**10
         final_gap = 0
@@ -145,20 +138,16 @@ if __name__=='__main__':
             for i in range(config.num_batches_per_epoch):
                 images, _, latents, log_probs = pipeline_with_logprob(
                     pipeline,
-                    num_inference_steps=config.num_steps,
+                    num_inference_steps = config.num_steps,
                     eta=config.eta,
                     output_type="latent", # output_type="pt"
                     model = model,
                     device = device
                 )
 
-                latents = torch.stack(
-                    latents, dim=1
-                )  # (batch_size, num_steps + 1, 4, 64, 64)
+                latents = torch.stack(latents, dim=1)  # (batch_size, num_steps + 1, 4, 64, 64)
                 log_probs = torch.stack(log_probs, dim=1)  # (batch_size, num_steps, 1)
-                timesteps = pipeline.scheduler.timesteps.repeat(
-                    config.batch_size_sample, 1
-                )  # (batch_size, num_steps)
+                timesteps = pipeline.scheduler.timesteps.repeat(config.batch_size_sample, 1)  # (batch_size, num_steps)
 
                 # compute rewards asynchronously
                 rewards = executor.submit(reward_fn, points, model.latent, dists)
@@ -168,12 +157,8 @@ if __name__=='__main__':
                 samples.append(
                     {
                         "timesteps": timesteps,
-                        "latents": latents[
-                            :, :-1
-                        ],  # each entry is the latent before timestep t
-                        "next_latents": latents[
-                            :, 1:
-                        ],  # each entry is the latent after timestep t
+                        "latents": latents[:, :-1],  # each entry is the latent before timestep t
+                        "next_latents": latents[:, 1:],  # each entry is the latent after timestep t
                         "log_probs": log_probs,
                         "rewards": rewards,
                     }
@@ -207,52 +192,31 @@ if __name__=='__main__':
             advantages = rewards
 
             # ungather advantages; we only need to keep the entries corresponding to the samples on this process
-            samples["advantages"] = (
-                torch.as_tensor(advantages)
-                .reshape(config.num_processes, -1)[config.process_index]
-                .to(device)
-            )
-
+            samples["advantages"] = (torch.as_tensor(advantages).reshape(config.num_processes, -1)[config.process_index].to(device))
             del samples["rewards"]
 
             total_batch_size, num_timesteps = samples["timesteps"].shape
 
             #################### TRAINING ####################
-            for inner_epoch in range(config.num_inner_epochs):
+            for inner_epoch in tqdm(range(config.num_inner_epochs)):
                 # shuffle samples along batch dimension
                 perm = torch.randperm(total_batch_size, device=device)
                 samples = {k: v[perm] for k, v in samples.items()}
 
                 # shuffle along time dimension independently for each sample
-                perms = torch.stack(
-                    [
-                        torch.randperm(num_timesteps, device=device)
-                        for _ in range(total_batch_size)
-                    ]
-                )
+                perms = torch.stack([torch.randperm(num_timesteps, device=device) for _ in range(total_batch_size)])
                 for key in ["timesteps", "latents", "next_latents", "log_probs"]:
-                    samples[key] = samples[key][
-                        torch.arange(total_batch_size, device=device)[:, None],
-                        perms,
-                    ]
+                    samples[key] = samples[key][torch.arange(total_batch_size, device=device)[:, None], perms, ]
 
                 # rebatch for training
-                samples_batched = {
-                    k: v.reshape(-1, config.batch_size_train, *v.shape[1:])
-                    for k, v in samples.items()
-                }
+                samples_batched = {k: v.reshape(-1, config.batch_size_train, *v.shape[1:]) for k, v in samples.items()}
 
                 # dict of lists -> list of dicts for easier iteration
-                samples_batched = [
-                    dict(zip(samples_batched, x)) for x in zip(*samples_batched.values())
-                ]
+                samples_batched = [dict(zip(samples_batched, x)) for x in zip(*samples_batched.values())]
 
                 for i, sample in list(enumerate(samples_batched)):
                     for j in range(num_train_timesteps):
-                        noise_pred = unet(
-                            sample["latents"][:, j],
-                            sample["timesteps"][:, j],
-                        )
+                        noise_pred = unet(sample["latents"][:, j], sample["timesteps"][:, j],)
                         
                         _, log_prob = ddim_step_with_logprob(
                             pipeline.scheduler,
@@ -265,18 +229,10 @@ if __name__=='__main__':
                         )
 
                         # ppo logic
-                        advantages = torch.clamp(
-                            sample["advantages"],
-                            -config.adv_clip_max,
-                            config.adv_clip_max,
-                        )
+                        advantages = torch.clamp(sample["advantages"], -config.adv_clip_max, config.adv_clip_max,)
                         ratio = torch.exp(log_prob - sample["log_probs"][:, j])
                         unclipped_loss = -advantages * ratio
-                        clipped_loss = -advantages * torch.clamp(
-                            ratio,
-                            1.0 - config.clip_range,
-                            1.0 + config.clip_range,
-                        )
+                        clipped_loss = -advantages * torch.clamp(ratio, 1.0 - config.clip_range, 1.0 + config.clip_range, )
                         loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
 
                         loss.backward()

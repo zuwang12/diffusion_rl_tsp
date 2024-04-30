@@ -91,7 +91,7 @@ class TSPDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         img, points, tour = self.rasterize(idx)
             
-        return img[np.newaxis,:,:], idx
+        return img[np.newaxis,:,:], points, tour, idx
 
 class Model_x0(nn.Module):
     def __init__(self, batch_size, num_points, img_size, line_color, line_thickness):

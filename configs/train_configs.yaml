@@ -8,9 +8,10 @@ revision : "main"
 num_processes : 1
 process_index : 0
 save_result : False
-save_freq : 50
-num_cities : 20
-run_name : 'test'
+save_freq : 10
+num_cities : 50
+run_name : 'tsp_test'
+use_prior_init : True
 
 # sample
 num_steps : 50
@@ -21,10 +22,10 @@ eta : 1.0 #TODO: check this randomness
 # train
 timestep_fraction : 1.0
 gradient_accumulation_steps : 1
-num_epochs : 4
-num_inner_epochs : 1
+num_epochs : 30
+num_inner_epochs : 5
 
-learning_rate : 0.0003 #3e-4
+learning_rate : 0.1 #3e-4
 adam_beta1 : 0.9
 adam_beta2 : 0.999
 adam_weight_decay : 0.0001 #1e-4

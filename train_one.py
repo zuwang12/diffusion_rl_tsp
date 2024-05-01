@@ -12,6 +12,7 @@ import time
 from concurrent import futures
 import pandas as pd
 import gc
+import os
 
 from model.unet import UNetModel
 from model.TSPModel import Model_x0, TSPDataset
@@ -25,12 +26,22 @@ from diffusers import StableDiffusionPipeline, DDIMScheduler
 def load_config():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_name", type=str, default="tsp", help="which training config to use")
+    parser.add_argument("--sample_idx_min", type=int, default = 0, help="minimum sample index")
+    parser.add_argument("--sample_idx_max", type=int, default = 100, help="maximum sample index")
+    parser.add_argument("--run_name", type=str, help="maximum sample index")
+    parser.add_argument("--num_cities", type=str, help="number of cities, points in image")
     args = parser.parse_args()
     # mapping from config name to config path
     config_mapping = {"tsp":  "./configs/train_configs.yaml"}
     with open(config_mapping[args.config_name]) as file:
         config_dict= yaml.safe_load(file)
         config = munchify(config_dict)
+    config['sample_idx_min'] = args.sample_idx_min
+    config['sample_idx_max'] = args.sample_idx_max
+    if args.run_name:
+        config['run_name'] = args.run_name
+    if args.num_cities:
+        config['num_cities'] = args.num_cities
     return config
 
 if __name__=='__main__':
@@ -39,7 +50,7 @@ if __name__=='__main__':
     device = ('cuda' if torch.cuda.is_available() else 'cpu')
     
     config.file_name = f'tsp{config.num_cities}_test_concorde.txt'
-    config.result_file_name = f'ours_tsp{config.num_cities}_test_epoch{config.num_epochs}_inner{config.num_inner_epochs}_{config.run_name}.csv'
+    config.result_file_name = f'ours_tsp{config.num_cities}_test_epoch{config.num_epochs}_inner{config.num_inner_epochs}_{config.run_name}_from{config.sample_idx_min}_to{config.sample_idx_max}.csv'
     print(json.dumps(config, indent=4))
     
     ################## fix seed ####################
@@ -56,7 +67,7 @@ if __name__=='__main__':
     
     ################## Set model, scheduler ##################
     unet = UNetModel(image_size=config.img_size, in_channels=1, out_channels=1, model_channels=64, num_res_blocks=2, channel_mult=(1,2,3,4), attention_resolutions=[16,8], num_heads=4).to(device)
-    unet.load_state_dict(torch.load(f'./ckpt/unet50_64_8.pth'))
+    unet.load_state_dict(torch.load(f'./ckpt/unet50_64_8.pth', map_location="cuda"))
     unet.to(device)
     unet.eval()
     pipeline.unet = unet
@@ -83,12 +94,14 @@ if __name__=='__main__':
                               line_thickness = config.line_thickness,
                               line_color = config.line_color)
     test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=config.batch_size_sample, shuffle=False)
+    test_dataset.file_lines = test_dataset.file_lines[:config.sample_idx_max] # slicing for tqdm
     num_points = test_dataset.rasterize(0)[1].shape[0]
     print('Created dataset')
     
-    solved_costs, init_costs, gt_costs, final_gaps, init_gaps, epochs = [], [], [], [], [], []
+    sample_idxes, solved_costs, init_costs, gt_costs, final_gaps, init_gaps, epochs = [], [], [], [], [], [], []
 
-    for img, points, gt_tour, sample_idx in test_dataloader:
+    for img, points, gt_tour, sample_idx in tqdm(test_dataloader, initial=config.sample_idx_min):
+        if (sample_idx < config.sample_idx_min or sample_idx >= config.sample_idx_max):continue
         ########### add prior model & prepare image ###########
         model = Model_x0( # TODO: From define -> To reinit
             batch_size = config.batch_size_sample, 
@@ -131,7 +144,7 @@ if __name__=='__main__':
         
         final_solved_cost = 10**10
         final_gap = 0
-        for epoch in tqdm(range(config.num_epochs)):
+        for epoch in range(config.num_epochs):
             #################### SAMPLING ####################
             samples = []
             for i in range(config.num_batches_per_epoch):
@@ -197,7 +210,7 @@ if __name__=='__main__':
             total_batch_size, num_timesteps = samples["timesteps"].shape
 
             #################### TRAINING ####################
-            for inner_epoch in tqdm(range(config.num_inner_epochs)):
+            for inner_epoch in range(config.num_inner_epochs):
                 # shuffle samples along batch dimension
                 perm = torch.randperm(total_batch_size, device=device)
                 samples = {k: v[perm] for k, v in samples.items()}
@@ -237,8 +250,9 @@ if __name__=='__main__':
                         loss.backward()
                         optimizer.step()
                         optimizer.zero_grad()
-
-        ################################## saving Pred ##################################
+                        
+        ################################## append Result ##################################
+        sample_idxes.append(sample_idx)                
         solved_costs.append(final_solved_cost)
         init_costs.append(init_cost)
         gt_costs.append(gt_cost)
@@ -249,20 +263,12 @@ if __name__=='__main__':
         del loss
         gc.collect()
         torch.cuda.empty_cache()
-        
-        if sample_idx%config.save_freq==1:
-            result_df = pd.DataFrame({
-                'solved_cost' : solved_costs,
-                'init_cost' : init_costs,
-                'gt_cost' : gt_costs,
-                'final_gap(%)' : final_gaps,
-                'init_gap(%)' : init_gaps,
-                'best_epoch' : epochs,
-            })
-            if config.save_result:
-                result_df.to_csv(f'./Results/{config.result_file_name}', index=False)
-    else:        
+
+    ################################## saving Pred ##################################
+    else:
         result_df = pd.DataFrame({
+            'sample_idx' : sample_idxes,
+            'best_epoch' : epochs,
             'solved_cost' : solved_costs,
             'init_cost' : init_costs,
             'gt_cost' : gt_costs,
@@ -270,4 +276,6 @@ if __name__=='__main__':
             'init_gap(%)' : init_gaps,
         })
         if config.save_result:
-            result_df.to_csv(f'./Results/{config.result_file_name}', index=False)
+            if not os.path.exists(f'./Results/{config.run_name}'):
+                os.makedirs(f'./Results/{config.run_name}')
+            result_df.to_csv(f'./Results/{config.run_name}/{config.result_file_name}', index=False)

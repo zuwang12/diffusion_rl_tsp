@@ -13,18 +13,11 @@ def tsp():
         
         return assignment_mat # [1, 50, 50] (adj_mat)
     
-    # def _fn(model_latent, points):
     def _fn(points, model_latent, dists=None):
         # batch_size = 1
         # model_latent = torch.randn(batch_size,points.shape[0],points.shape[0])
         adj_mat = normalize((model_latent)).detach().cpu().numpy()[0] # model_latent : [1, 50, 50] -> adj_mat : (50, 50)
         adj_mat = adj_mat+adj_mat.T
-
-        # if dists == None:
-        #     dists = np.zeros_like(adj_mat) # (50, 50)
-        #     for i in range(dists.shape[0]):
-        #         for j in range(dists.shape[0]):
-        #             dists[i,j] = np.linalg.norm(points[i]-points[j])
 
         components = np.zeros((adj_mat.shape[0],2)).astype(int) # (50, 2)
         components[:] = np.arange(adj_mat.shape[0])[...,None] # (50, 1) | [[1], [2], ... , [49]]

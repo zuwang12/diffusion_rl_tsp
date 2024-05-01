@@ -9,7 +9,7 @@ num_processes : 1
 process_index : 0
 save_result : False
 save_freq : 10
-num_cities : 50
+num_cities : 20
 run_name : 'tsp_test'
 use_prior_init : True
 

@@ -53,7 +53,7 @@ def runlat(model, unet, STEPS, batch_size, device):
     # model.latent.data=temp
 
     steps = STEPS
-    for i in tqdm(range(steps)):
+    for i in range(steps):
         t = ((steps-i) + (steps-i)//3*math.cos(i/50))/steps*diffusion.T # Linearly decreasing + cosine
 
         t = np.clip(t, 1, diffusion.T)

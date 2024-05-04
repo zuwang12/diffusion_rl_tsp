@@ -34,7 +34,8 @@ def pipeline_with_logprob(
     
     # 2. Prepare latent variables
     # latents = model.encode(sampling=True) # get x0
-    latents = torch.randn_like(model.encode())
+    # latents = torch.randn_like(model.encode())
+    latents = model.xT
     batch_size = latents.shape[0]
         
     # 3. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
@@ -74,15 +75,15 @@ def pipeline_with_logprob(
                 callback(i, t, latents)
 
     image = latents
-    has_nsfw_concept = None
+    has_nsfw_concept = None #TODO: check the meaning of nsfw
 
     if has_nsfw_concept is None:
         do_denormalize = [True] * image.shape[0]
     else:
         do_denormalize = [not has_nsfw for has_nsfw in has_nsfw_concept]
 
-    image = self.image_processor.postprocess(
-        image, output_type=output_type, do_denormalize=do_denormalize
+    image = self.image_processor.postprocess( # return image if output_type == "latent"
+        image, output_type=output_type, do_denormalize=do_denormalize # TODO: check meaning of denormalize
     )
 
     # Offload last model to CPU

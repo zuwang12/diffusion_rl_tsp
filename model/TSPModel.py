@@ -94,17 +94,24 @@ class TSPDataset(torch.utils.data.Dataset):
         return img[np.newaxis,:,:], points, tour, idx
 
 class Model_x0(nn.Module):
-    def __init__(self, batch_size, num_points, img_size, line_color, line_thickness):
+    def __init__(self, batch_size, num_points, img_size, line_color, line_thickness, xT):
         super(Model_x0, self).__init__()
         
         # Latent variables (b,v,v) matrix
         self.latent = nn.Parameter(torch.randn(batch_size, num_points, num_points)) # (B, 50, 50)
         self.latent.requires_grad = True
         
+        self.num_points = num_points
         self.batch_size = batch_size
         self.img_size = img_size
         self.line_color = line_color
         self.line_thickness = line_thickness
+        self.xT = xT
+
+    def reset(self):
+        nn.init.normal_(self.latent)
+        # self.latent = nn.Parameter(torch.randn(self.batch_size, self.num_points, self.num_points)) # (B, 50, 50)
+        # self.latent.requires_grad = True
 
     def compute_edge_images(self, points, img_query):
         # Pre-compute edge images

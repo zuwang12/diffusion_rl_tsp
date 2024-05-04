@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 import math
 from tqdm import tqdm
+import gc
 
 import torch
 import torch.nn.functional as F
@@ -70,6 +71,9 @@ def runlat(model, unet, STEPS, batch_size, device):
         opt.step()
         opt.zero_grad()
         scheduler.step()
+    
+    gc.collect()
+    torch.cuda.empty_cache()
     
     
 def normalize(cost, entropy_reg=0.1, n_iters=20, eps=1e-6):

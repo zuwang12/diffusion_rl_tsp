@@ -12,6 +12,8 @@ import time
 from concurrent import futures
 import pandas as pd
 import gc
+import os
+from copy import deepcopy
 
 from model.unet import UNetModel
 from model.TSPModel import Model_x0, TSPDataset
@@ -36,6 +38,9 @@ def load_config():
 if __name__=='__main__':
     config = load_config()
     tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
+    now = time.strftime('%y%m%d_%H%M%S')
+    config.run_name += f'_{now}'
+    
     device = ('cuda' if torch.cuda.is_available() else 'cpu')
     
     config.file_name = f'tsp{config.num_cities}_test_concorde.txt'
@@ -54,7 +59,7 @@ if __name__=='__main__':
     num_train_timesteps = int(config.num_steps * config.timestep_fraction)
     pipeline = StableDiffusionPipeline.from_pretrained(config.model, revision=config.revision)
     
-    ################## Set model, scheduler ##################
+    ################## Set model, diffusion scheduler ##################
     unet = UNetModel(image_size=config.img_size, in_channels=1, out_channels=1, model_channels=64, num_res_blocks=2, channel_mult=(1,2,3,4), attention_resolutions=[16,8], num_heads=4).to(device)
     unet.load_state_dict(torch.load(f'./ckpt/unet50_64_8.pth'))
     unet.to(device)
@@ -72,8 +77,6 @@ if __name__=='__main__':
     if config.allow_tf32: # TODO: need to change
         torch.backends.cuda.matmul.allow_tf32 = True
     ################## Set model, scheduler ##################
-    
-    optimizer_cls = torch.optim.AdamW
         
     test_dataset = TSPDataset(data_file=f'./data/{config.file_name}',
                               img_size = config.img_size,
@@ -86,16 +89,19 @@ if __name__=='__main__':
     num_points = test_dataset.rasterize(0)[1].shape[0]
     print('Created dataset')
     
-    solved_costs, init_costs, gt_costs, final_gaps, init_gaps, epochs = [], [], [], [], [], []
+    sample_idxes, solved_costs, init_costs, gt_costs, final_gaps, init_gaps, epochs, inner_epochs = [], [], [], [], [], [], [], []
 
-    for img, points, gt_tour, sample_idx in test_dataloader:
+    for img, points, gt_tour, sample_idx in tqdm(test_dataloader):
         ########### add prior model & prepare image ###########
+        xT = torch.randn_like(img).float().to(device) # used at each problem
         model = Model_x0( # TODO: From define -> To reinit
-            batch_size = config.batch_size_sample, 
-            num_points = num_points, 
+            batch_size = config.batch_size_sample,
+            num_points = num_points,
             img_size = config.img_size,
             line_color = config.line_color,
-            line_thickness = config.line_thickness,).to(device) #TODO: check batch_size from sample vs train
+            line_thickness = config.line_thickness,
+            xT = xT).to(device) #TODO: check batch_size from sample vs train
+        model.eval()
 
         # _, points, gt_tour = test_dataset.rasterize(sample_idx[0].item())
         points, gt_tour = points.numpy()[0], gt_tour.numpy()[0]
@@ -110,36 +116,31 @@ if __name__=='__main__':
             for j in range(dists.shape[0]):
                 dists[i,j] = np.linalg.norm(points[i]-points[j])
                 
-        if config.use_prior_init:
-            runlat(model, unet, STEPS=config.num_steps, batch_size=1, device=device)
         ########### add prior model & prepare image ###########
         
-        optimizer = optimizer_cls(
-            model.parameters(), # unet.parameters()
-            lr=config.learning_rate,
-            betas=(config.adam_beta1, config.adam_beta2),
-            weight_decay=config.adam_weight_decay,
-            eps=config.adam_epsilon
-            )
-        
         reward_fn = getattr(reward_fns, config.reward_type)()
-        executor = futures.ThreadPoolExecutor(max_workers=2)
-
-        # Train!
-        # samples_per_epoch = (config.batch_size_sample * config.num_processes * config.num_batches_per_epoch) # what the hell is this?
-        # total_train_batch_size = (config.batch_size_train * config.num_processes * config.gradient_accumulation_steps) # what the hell is this?
-        
         final_solved_cost = 10**10
         final_gap = 0
-        for epoch in tqdm(range(config.num_epochs)):
-            #################### SAMPLING ####################
+        
+        # Train!
+        for epoch in range(config.num_epochs):
+            #################### SAMPLING ####################                
+            if epoch == 0:
+                num_sample = config.num_init_sample
+            else:
+                num_sample = 1
             samples = []
-            for i in range(config.num_batches_per_epoch):
-                images, _, latents, log_probs = pipeline_with_logprob(
+            best_reward = -10**10
+            for i in range(num_sample):
+                if epoch == 0:
+                    model.reset() # get various x0 | TODO: model define vs weight init compare!
+                    if config.use_plug_and_play:
+                        runlat(model, unet, STEPS=config.num_steps, batch_size=1, device=device)   
+                _, _, latents, log_probs = pipeline_with_logprob( # image, has_nsfw_concept, all_latents, all_log_probs
                     pipeline,
                     num_inference_steps = config.num_steps,
                     eta=config.eta,
-                    output_type="latent", # output_type="pt"
+                    output_type="latent", # latent : resolution = image resolution
                     model = model,
                     device = device
                 )
@@ -148,10 +149,10 @@ if __name__=='__main__':
                 log_probs = torch.stack(log_probs, dim=1)  # (batch_size, num_steps, 1)
                 timesteps = pipeline.scheduler.timesteps.repeat(config.batch_size_sample, 1)  # (batch_size, num_steps)
 
-                # compute rewards asynchronously
-                rewards = executor.submit(reward_fn, points, model.latent, dists)
-                # yield to to make sure reward computation starts
-                time.sleep(0)
+                rewards = torch.as_tensor(reward_fn(points, model.latent, dists)[0], device=device)
+                if float(rewards)>best_reward:
+                    best_reward = float(rewards)
+                    model_init = deepcopy(model.state_dict())
 
                 samples.append(
                     {
@@ -161,43 +162,54 @@ if __name__=='__main__':
                         "log_probs": log_probs,
                         "rewards": rewards,
                     }
-                )
+                ) 
 
-            # wait for all rewards to be computed
-            for sample in samples:
-                rewards, reward_metadata = sample["rewards"].result()
-                sample["rewards"] = torch.as_tensor(rewards, device=device)
+            model.load_state_dict(model_init)
 
             # collate samples into dict where each entry has shape (num_batches_per_epoch * sample.batch_size, ...)
             samples = {k: torch.cat([s[k] for s in samples]) for k in samples[0].keys()}
             
             # gather rewards across processes
             rewards = (samples["rewards"]).cpu().numpy()
-            solved_cost = reward_metadata['solved_cost']
+            
+            solved_cost = -best_reward
             gap = 100*(solved_cost-gt_cost) / gt_cost
             
-            if solved_cost<final_solved_cost:
-                running_epoch = epoch
-                final_solved_cost = solved_cost
-                final_gap = gap
-
-            ################################## saving Init Cost ##################################
-            if epoch == 0:
+            if epoch == 0: # default setting
                 init_cost = solved_cost
                 init_gap = gap
-            ################################## saving Init Cost ##################################
+            ################################## Update records ##################################
             
-            # advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
-            advantages = rewards
+            if len(rewards)>1:
+                advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+            else:
+                advantages = rewards
 
             # ungather advantages; we only need to keep the entries corresponding to the samples on this process
             samples["advantages"] = (torch.as_tensor(advantages).reshape(config.num_processes, -1)[config.process_index].to(device))
             del samples["rewards"]
 
             total_batch_size, num_timesteps = samples["timesteps"].shape
-
-            #################### TRAINING ####################
-            for inner_epoch in tqdm(range(config.num_inner_epochs)):
+            
+            # num_inner_epochs = total_batch_size
+            if epoch == 0:
+                num_inner_epochs = config.num_inner_epochs
+            else:
+                num_inner_epochs = 1
+            
+            optimizer_cls = torch.optim.AdamW
+            optimizer = optimizer_cls(
+                model.parameters(), # unet.parameters()
+                lr =config.learning_rate,
+                betas = (config.adam_beta1, config.adam_beta2),
+                weight_decay = config.adam_weight_decay,
+                eps = config.adam_epsilon
+            )    
+            
+            scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1, end_factor=0.1, total_iters=num_inner_epochs)
+            
+            ######################################## TRAINING ########################################
+            for inner_epoch in range(num_inner_epochs):
                 # shuffle samples along batch dimension
                 perm = torch.randperm(total_batch_size, device=device)
                 samples = {k: v[perm] for k, v in samples.items()}
@@ -234,35 +246,59 @@ if __name__=='__main__':
                         clipped_loss = -advantages * torch.clamp(ratio, 1.0 - config.clip_range, 1.0 + config.clip_range, )
                         loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
 
+                        optimizer.zero_grad()
                         loss.backward()
                         optimizer.step()
-                        optimizer.zero_grad()
-
-        ################################## saving Pred ##################################
+                        
+                        
+                    ############# save best result ##############
+                    solved_cost = reward_fn(points, model.latent, dists)[1]['solved_cost']
+                    gap = 100*(solved_cost-gt_cost) / gt_cost
+                    # print(f'sample index : {int(sample_idx)}, {i}.{inner_epoch}-iter, solved cost : {solved_cost}, gt cost : {gt_cost}')  
+                    if solved_cost<final_solved_cost:
+                        best_epoch = epoch
+                        best_inner_epoch = inner_epoch
+                        final_solved_cost = solved_cost
+                        final_gap = gap
+                    ############# save best result ##############
+                
+                # if epoch == 0:   
+                #     scheduler.step()
+        ################################## append Result at each sample index ##################################
+        sample_idxes.append(int(sample_idx))
         solved_costs.append(final_solved_cost)
         init_costs.append(init_cost)
         gt_costs.append(gt_cost)
         final_gaps.append(final_gap)
         init_gaps.append(init_gap)
-        epochs.append(running_epoch)
+        epochs.append(best_epoch)
+        inner_epochs.append(best_inner_epoch)
         
         del loss
         gc.collect()
         torch.cuda.empty_cache()
         
-        if sample_idx%config.save_freq==1:
+        if sample_idx%config.save_freq==0:
             result_df = pd.DataFrame({
+                'sample_idx' : sample_idxes,
+                'best_epoch' : epochs,
+                'best_inner_epoch' : inner_epochs,
                 'solved_cost' : solved_costs,
                 'init_cost' : init_costs,
                 'gt_cost' : gt_costs,
                 'final_gap(%)' : final_gaps,
                 'init_gap(%)' : init_gaps,
-                'best_epoch' : epochs,
             })
             if config.save_result:
-                result_df.to_csv(f'./Results/{config.result_file_name}', index=False)
+                if not os.path.exists(f'./Results/{config.run_name}'):
+                    os.makedirs(f'./Results/{config.run_name}')
+                result_df.to_csv(f'./Results/{config.run_name}/{config.result_file_name}', index=False)
+                
     else:        
         result_df = pd.DataFrame({
+            'sample_idx' : sample_idxes,
+            'best_epoch' : epochs,
+            'best_inner_epoch' : inner_epochs,
             'solved_cost' : solved_costs,
             'init_cost' : init_costs,
             'gt_cost' : gt_costs,
@@ -270,4 +306,6 @@ if __name__=='__main__':
             'init_gap(%)' : init_gaps,
         })
         if config.save_result:
-            result_df.to_csv(f'./Results/{config.result_file_name}', index=False)
+            if not os.path.exists(f'./Results/{config.run_name}'):
+                os.makedirs(f'./Results/{config.run_name}')
+            result_df.to_csv(f'./Results/{config.run_name}/{config.result_file_name}', index=False)

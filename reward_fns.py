@@ -63,7 +63,7 @@ def tsp():
 
         # gt_cost = tsp_solver.evaluate([i-1 for i in gt_tour]) # TODO: one times
         solved_cost = tsp_solver.evaluate(solved_tour)
-        
+        # print('solved cost : ', solved_cost)
         return -np.array([solved_cost]), {
             # 'solved_tour' : solved_tour, 
             # 'points' : points, 

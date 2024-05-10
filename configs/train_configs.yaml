@@ -7,23 +7,23 @@ model : "runwayml/stable-diffusion-v1-5"
 revision : "main"
 num_processes : 1
 process_index : 0
-save_result : False
-save_freq : 10
+save_result : True
+save_freq : 2
 num_cities : 20
 run_name : 'tsp_test'
-use_prior_init : True
+use_plug_and_play : True
 
 # sample
 num_steps : 50
 batch_size_sample : 1
-num_batches_per_epoch : 1
+num_init_sample : 10
 eta : 1.0 #TODO: check this randomness
 
 # train
 timestep_fraction : 1.0
 gradient_accumulation_steps : 1
-num_epochs : 30
-num_inner_epochs : 5
+num_epochs : 10
+num_inner_epochs : 10
 
 learning_rate : 0.1 #3e-4
 adam_beta1 : 0.9

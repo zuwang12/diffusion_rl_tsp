@@ -43,7 +43,7 @@ if __name__=='__main__':
     
     device = ('cuda' if torch.cuda.is_available() else 'cpu')
     
-    config.file_name = f'tsp{config.num_cities}_constraint_concorde.txt'
+    config.file_name = f'tsp{config.num_cities}_constraint_concorde_new.txt'
     config.result_file_name = f'ours_tsp{config.num_cities}_constraint_epoch{config.num_epochs}_inner{config.num_inner_epochs}_{config.run_name}.csv'
     print(json.dumps(config, indent=4))
     
@@ -93,6 +93,7 @@ if __name__=='__main__':
     sample_idxes, solved_costs, init_costs, gt_costs, final_gaps, init_gaps, epochs, inner_epochs = [], [], [], [], [], [], [], []
 
     for img, points, gt_tour, sample_idx, box in tqdm(test_dataloader):
+        if int(sample_idx)==0:continue
         ########### prepare constraint ##############
         distance_matrix = create_distance_matrix(points, box, type='soft')
         box_matrix = create_distance_matrix(points, box, type='hard')
@@ -123,7 +124,7 @@ if __name__=='__main__':
                 
         ########### add prior model & prepare image ###########
         gt_img = draw_tour_box(tour = gt_tour, points = points, box=box)
-        save_image(torch.tensor(gt_img), f'./images/gt_img_sample{int(sample_idx)}_cost{float(gt_cost)}.png')
+        save_image(torch.tensor(gt_img), f'./images/gt_img_sample{int(sample_idx)}_cost{round(float(gt_cost), 2)}.png')
         
         
         reward_fn = getattr(reward_fns, config.reward_type)()
@@ -263,8 +264,9 @@ if __name__=='__main__':
                         
                         
                     ############# save best result ##############
-                    solved_cost = reward_fn(points, model.latent, dists)[1]['solved_cost']
-                    solved_tour = reward_fn(points, model.latent, dists)[1]['solved_tour']
+                    output = reward_fn(points, model.latent, dists, box_matrix)[1]
+                    solved_cost, solved_tour = output['solved_cost'], output['solved_tour']
+                    # print('solved tour : ', solved_tour)
                     gap = 100*(solved_cost-gt_cost) / gt_cost
                     # print(f'sample index : {int(sample_idx)}, {i}.{inner_epoch}-iter, solved cost : {solved_cost}, gt cost : {gt_cost}')  
                     if solved_cost<final_solved_cost:
@@ -276,10 +278,10 @@ if __name__=='__main__':
                 
                 # if epoch == 0:   
                 #     scheduler.step()
-            print('here')
-            model.save_image(f'./images/encode_epoch{int(epoch)}.png')
+            # model.save_image(f'./images/encode_img_sample{int(sample_idx)}_epoch{int(epoch)}.png')
             solved_img = draw_tour_box(tour=solved_tour, points = points, box = box)
-            save_image(torch.tensor(solved_img), f'./images/solved_image_sample{int(sample_idx)}_cost{solved_cost}.png')
+            output_test = reward_fn(points, model.latent, dists, box_matrix)[1]
+            save_image(torch.tensor(solved_img), f'./images/solved_image_sample{int(sample_idx)}_cost{round(solved_cost, 2)}_epoch{int(epoch)}.png')
         ################################## append Result at each sample index ##################################
         sample_idxes.append(int(sample_idx))
         solved_costs.append(final_solved_cost)

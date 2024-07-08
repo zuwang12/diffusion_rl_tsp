@@ -113,28 +113,28 @@ def ddim_step_with_logprob(
 
     # 3. compute predicted original sample from predicted noise also called
     # "predicted x_0" of formula (12) from https://arxiv.org/pdf/2010.02502.pdf
-    if self.config.prediction_type == "epsilon": #TODO: why there are various type?
-        pred_original_sample = (
-            sample - beta_prod_t ** (0.5) * model_output
-        ) / alpha_prod_t ** (0.5)
-        pred_epsilon = model_output
-    elif self.config.prediction_type == "sample":
-        pred_original_sample = model_output
-        pred_epsilon = (
-            sample - alpha_prod_t ** (0.5) * pred_original_sample
-        ) / beta_prod_t ** (0.5)
-    elif self.config.prediction_type == "v_prediction":
-        pred_original_sample = (alpha_prod_t**0.5) * sample - (
-            beta_prod_t**0.5
-        ) * model_output
-        pred_epsilon = (alpha_prod_t**0.5) * model_output + (
-            beta_prod_t**0.5
-        ) * sample
-    else:
-        raise ValueError(
-            f"prediction_type given as {self.config.prediction_type} must be one of `epsilon`, `sample`, or"
-            " `v_prediction`"
-        )
+    # if self.config.prediction_type == "epsilon": #TODO: why there are various type?
+    #     pred_original_sample = (
+    #         sample - beta_prod_t ** (0.5) * model_output
+    #     ) / alpha_prod_t ** (0.5)
+    #     pred_epsilon = model_output
+    # elif self.config.prediction_type == "sample":
+    #     pred_original_sample = model_output
+    #     pred_epsilon = (
+    #         sample - alpha_prod_t ** (0.5) * pred_original_sample
+    #     ) / beta_prod_t ** (0.5)
+    # elif self.config.prediction_type == "v_prediction":
+    #     pred_original_sample = (alpha_prod_t**0.5) * sample - (
+    #         beta_prod_t**0.5
+    #     ) * model_output
+    #     pred_epsilon = (alpha_prod_t**0.5) * model_output + (
+    #         beta_prod_t**0.5
+    #     ) * sample
+    # else:
+    #     raise ValueError(
+    #         f"prediction_type given as {self.config.prediction_type} must be one of `epsilon`, `sample`, or"
+    #         " `v_prediction`"
+    #     )
         
     pred_original_sample = model.encode()
     pred_epsilon = model_output

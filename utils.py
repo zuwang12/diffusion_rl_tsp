@@ -7,6 +7,7 @@ import gc
 
 import torch
 import torch.nn.functional as F
+from torchvision.utils import save_image
 from model.diffusion import GaussianDiffusion
 
 class TSP_2opt():
@@ -150,7 +151,68 @@ def get_tsp_cost(points, model_latent, gt_tour):
                                         'gt_cost' : gt_cost,
                                         'solved_cost' : solved_cost,}    
     
+def draw_tour(tour, points, img_size = 64, line_color = 0.5, line_thickness = 2, point_circle = True, point_radius = 2, point_color = 1):
+    img = np.zeros((img_size, img_size))
+    # Rasterize lines
+    for i in range(tour.shape[0]-1):
+        from_idx = int(tour[i]-1)
+        to_idx = int(tour[i+1]-1)
+
+        cv2.line(img, 
+                    tuple(((img_size-1)*points[from_idx,::-1]).astype(int)), 
+                    tuple(((img_size-1)*points[to_idx,::-1]).astype(int)), 
+                    color=line_color, thickness=line_thickness)
+
+    # Rasterize points
+    for i in range(points.shape[0]):
+        if point_circle:
+            cv2.circle(img, tuple(((img_size-1)*points[i,::-1]).astype(int)), 
+                        radius=point_radius, color=point_color, thickness=-1)
+        else:
+            row = round((img_size-1)*points[i,0])
+            col = round((img_size-1)*points[i,1])
+            img[row,col] = point_color
+        
+    # Rescale image to [-1,1]
+    img = 2*(img-0.5)
+    return img
     
+def draw_tour_box(tour, points, box = None, img_size = 64, line_color = 0.5, line_thickness = 2, point_circle = True, point_radius = 2, point_color = 1, box_color = 0.75):
+    img = np.zeros((img_size, img_size))
+    # Rasterize lines
+    for i in range(tour.shape[0]-1):
+        from_idx = int(tour[i]-1)
+        to_idx = int(tour[i+1]-1)
+
+        cv2.line(img, 
+                    tuple(((img_size-1)*points[from_idx,::-1]).astype(int)), 
+                    tuple(((img_size-1)*points[to_idx,::-1]).astype(int)), 
+                    color=line_color, thickness=line_thickness)
+
+    # Rasterize points
+    for i in range(points.shape[0]):
+        if point_circle:
+            if i==0:
+                cv2.circle(img, tuple(((img_size-1)*points[i,::-1]).astype(int)), 
+                        radius=point_radius, color=0.25, thickness=-1)
+            else:
+                cv2.circle(img, tuple(((img_size-1)*points[i,::-1]).astype(int)), 
+                        radius=point_radius, color=point_color, thickness=-1)
+        else:
+            row = round((img_size-1)*points[i,0])
+            col = round((img_size-1)*points[i,1])
+            img[row,col] = point_color
+    
+    if box is not None:
+        x_left = int(box[0] * (img_size - 1))
+        x_right = int(box[1] * (img_size - 1))
+        y_bottom = int(box[2] * (img_size - 1))
+        y_top = int(box[3] * (img_size - 1))
+        img[y_bottom:y_top, x_left:x_right] = box_color
+        
+    # Rescale image to [-1,1]
+    # img = 2*(img-0.5)
+    return img
     
 def rasterize_tsp(points, tour, img_size, line_color, line_thickness, point_color, point_radius):
     # Rasterize lines
@@ -170,3 +232,108 @@ def rasterize_tsp(points, tour, img_size, line_color, line_thickness, point_colo
                    radius=point_radius, color=point_color, thickness=-1)
 
     return img
+
+
+
+def save_solved_img(points, model, dists, reward_fn, test_dataset, path='./solved_img.png'):
+    _, reward_meta = reward_fn(points, model.latent, dists)
+    solved_img = test_dataset.draw_tour(np.array(reward_meta['solved_tour'])+1, points)
+    solved_img -= solved_img.min()
+    solved_img /= solved_img.max()
+    save_image(torch.tensor(solved_img), path)
+    
+# Function to check if two line segments intersect
+def do_lines_intersect(p1, p2, q1, q2):
+    def ccw(A, B, C):
+        return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
+    return ccw(p1, q1, q2) != ccw(p2, q1, q2) and ccw(p1, p2, q1) != ccw(p1, p2, q2)
+
+# Function to check if a line segment intersects a rectangle
+def crosses_restricted_zone(p1, p2, restricted_zone):
+    x1, x2, y1, y2 = restricted_zone
+    # Ensure that x1, y1 is the bottom-left and x2, y2 is the top-right
+    x1, x2 = min(x1, x2), max(x1, x2)
+    y1, y2 = min(y1, y2), max(y1, y2)
+    
+    # Define the corners of the rectangle
+    corners = [(x1, y1), (x1, y2), (x2, y1), (x2, y2)]
+    
+    # Define the edges of the rectangle
+    edges = [
+        (corners[0], corners[1]),  # Left edge
+        (corners[1], corners[3]),  # Top edge
+        (corners[3], corners[2]),  # Right edge
+        (corners[2], corners[0])   # Bottom edge
+    ]
+    
+    # Check if the line segment intersects any of the rectangle's edges
+    for edge in edges:
+        if do_lines_intersect(p1, p2, edge[0], edge[1]):
+            return True
+    return False
+
+def create_distance_matrix(points, box, type='soft'):
+    def euclidean_distance(p1, p2):
+        return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+
+    # points = np.column_stack((env.x, env.y))
+    points = points[0]
+    box = box[0]
+    restricted_zone = box
+    num_cities = len(points)
+    distance_matrix = {}
+    penalty = 1e2  # Very large penalty for crossing the restricted zone
+
+    for from_node in range(num_cities):
+        distance_matrix[from_node] = {}
+        for to_node in range(num_cities):
+            if from_node == to_node:
+                distance_matrix[from_node][to_node] = 0
+            else:
+                p1, p2 = points[from_node], points[to_node]
+                if type=='soft':
+                    distance = euclidean_distance(p1, p2)
+                    if crosses_restricted_zone(p1, p2, restricted_zone):
+                        distance += penalty
+                    distance_matrix[from_node][to_node] = distance
+                elif type=='hard':
+                    distance = 0
+                    if crosses_restricted_zone(p1, p2, restricted_zone):
+                        distance = 1
+                    distance_matrix[from_node][to_node] = distance
+    
+    return distance_matrix
+
+def write_tsplib_file(distance_matrix, filename, scale_factor=1000):
+    size = len(distance_matrix)
+    with open(filename, 'w') as f:
+        f.write("NAME: TSP\n")
+        f.write("TYPE: TSP\n")
+        f.write("DIMENSION: {}\n".format(size))
+        f.write("EDGE_WEIGHT_TYPE: EXPLICIT\n")
+        f.write("EDGE_WEIGHT_FORMAT: FULL_MATRIX\n")
+        f.write("EDGE_WEIGHT_SECTION\n")
+        for i in range(size):
+            for j in range(size):
+                # Scale and convert float to int
+                f.write("{} ".format(int(distance_matrix[i][j] * scale_factor)))
+            f.write("\n")
+        f.write("EOF\n")
+        
+        
+def get_cost(points, tour):
+    """ tour의 length를 계산하는 함수
+
+    Args:
+        points (np.array): (N, 2) shape
+        tour (list): [0, 6, 9, 12, ... 0] length N+1의 list. 첫 시작과 마지막은 0으로 fix
+
+    Returns:
+        _type_: _description_
+    """
+    costs = []
+    tsp_solver = TSP_2opt(points)
+    cost = tsp_solver.evaluate(tour)
+    costs.append(cost)
+    
+    return sum(costs)/len(costs)

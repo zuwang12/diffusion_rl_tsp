@@ -1,19 +1,24 @@
 from torch import nn
 import torch
+from torchvision.utils import save_image
 import numpy as np
 import cv2
 from copy import deepcopy
+import random
 
 class TSPDataset(torch.utils.data.Dataset):
-    def __init__(self, data_file, img_size, point_radius=1, point_color=1, point_circle=True, line_thickness=2, line_color=0.5, max_points=100):
+    def __init__(self, data_file, img_size, return_box=False, show_position=False, point_radius=1, point_color=1, point_circle=True, line_thickness=2, line_color=0.5, box_color=0.75, max_points=100):
         self.data_file = data_file
         self.img_size = img_size
+        self.return_box = return_box
         self.point_radius = point_radius
         self.point_color = point_color
         self.point_circle = point_circle
         self.line_thickness = line_thickness
         self.line_color = line_color
+        self.box_color = box_color
         self.max_points = max_points
+        self.show_position = show_position
         
         self.file_lines = open(data_file).read().splitlines()
         print(f'Loaded "{data_file}" with {len(self.file_lines)} lines')
@@ -21,7 +26,7 @@ class TSPDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.file_lines)
     
-    def rasterize(self, idx):
+    def rasterize(self, idx, return_img = True):
         # Select sample
         line = self.file_lines[idx]
         # Clear leading/trailing characters
@@ -35,39 +40,54 @@ class TSPDataset(torch.utils.data.Dataset):
         tour = line.split(' output ')[1]
         tour = tour.split(' ')
         tour = np.array([int(t) for t in tour])
+        if len(line.split(' output '))>2:
+            # Extract box
+            box = line.split(' output ')[2]
+            box = box.split(' ')
+            box = np.array([float(t) for t in box])
         
+        if self.return_box:
+            img = self.draw_tour(tour=tour, points=points, box=box)
+            return img, points, tour, box
+        
+        if return_img:
+            img = self.draw_tour(tour=tour, points=points)
+            return img, points, tour
+        # # Rasterize lines
+        # img = np.zeros((self.img_size, self.img_size))
+        # for i in range(tour.shape[0]-1):
+        #     from_idx = tour[i]-1
+        #     to_idx = tour[i+1]-1
+
+        #     cv2.line(img, 
+        #              tuple(((self.img_size-1)*points[from_idx,::-1]).astype(int)), 
+        #              tuple(((self.img_size-1)*points[to_idx,::-1]).astype(int)), 
+        #              color=self.line_color, thickness=self.line_thickness)
+
+        # # Rasterize points
+        # for i in range(points.shape[0]):
+        #     if self.point_circle:
+        #         cv2.circle(img, tuple(((self.img_size-1)*points[i,::-1]).astype(int)), 
+        #                    radius=self.point_radius, color=self.point_color, thickness=-1)
+        #     else:
+        #         row = round((self.img_size-1)*points[i,0])
+        #         col = round((self.img_size-1)*points[i,1])
+        #         img[row,col] = self.point_color
+            
+        # # Rescale image to [-1,1]
+        # img = 2*(img-0.5)
+        return points, tour
+
+    def draw_tour(self, tour, points, box = None, edges = None):
+        img = np.zeros((self.img_size, self.img_size))
         # Rasterize lines
-        img = np.zeros((self.img_size, self.img_size))
         for i in range(tour.shape[0]-1):
-            from_idx = tour[i]-1
-            to_idx = tour[i+1]-1
-
-            cv2.line(img, 
-                     tuple(((self.img_size-1)*points[from_idx,::-1]).astype(int)), 
-                     tuple(((self.img_size-1)*points[to_idx,::-1]).astype(int)), 
-                     color=self.line_color, thickness=self.line_thickness)
-
-        # Rasterize points
-        for i in range(points.shape[0]):
-            if self.point_circle:
-                cv2.circle(img, tuple(((self.img_size-1)*points[i,::-1]).astype(int)), 
-                           radius=self.point_radius, color=self.point_color, thickness=-1)
-            else:
-                row = round((self.img_size-1)*points[i,0])
-                col = round((self.img_size-1)*points[i,1])
-                img[row,col] = self.point_color
-            
-        # Rescale image to [-1,1]
-        img = 2*(img-0.5)
-            
-        return img, points, tour
-
-    def draw_tour(self, tour, points):
-        img = np.zeros((self.img_size, self.img_size))
-        for i in range(tour.shape[0]-1):
-            from_idx = tour[i]-1
-            to_idx = tour[i+1]-1
-
+            if tour.min()==1:
+                from_idx = tour[i]-1
+                to_idx = tour[i+1]-1
+            elif tour.min()==0:
+                from_idx = tour[i]
+                to_idx = tour[i+1]
             cv2.line(img, 
                         tuple(((self.img_size-1)*points[from_idx,::-1]).astype(int)), 
                         tuple(((self.img_size-1)*points[to_idx,::-1]).astype(int)), 
@@ -75,23 +95,59 @@ class TSPDataset(torch.utils.data.Dataset):
 
         # Rasterize points
         for i in range(points.shape[0]):
+            point_coords = tuple(((self.img_size-1)*points[i,::-1]).astype(int))
             if self.point_circle:
-                cv2.circle(img, tuple(((self.img_size-1)*points[i,::-1]).astype(int)), 
+                cv2.circle(img, point_coords, 
                             radius=self.point_radius, color=self.point_color, thickness=-1)
             else:
                 row = round((self.img_size-1)*points[i,0])
                 col = round((self.img_size-1)*points[i,1])
                 img[row,col] = self.point_color
-            
+                
+                    # Conditionally add text to image
+            if self.show_position:
+                text = f'({points[i, 1]:.2f}, {points[i, 0]:.2f})'
+                cv2.putText(img, text, (point_coords[0] + 5, point_coords[1] - 5), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, self.point_color, 1, cv2.LINE_AA)
+        
+        # Rasterize box
+        if box is not None:
+            y_bottom = int(box[0] * (self.img_size - 1))
+            y_top = int(box[1] * (self.img_size - 1))
+            x_left = int(box[2] * (self.img_size - 1))
+            x_right = int(box[3] * (self.img_size - 1))
+            img[y_bottom:y_top, x_left:x_right] = self.box_color
+
+            if self.show_position:
+                corners = [(x_left, y_bottom), (x_right, y_bottom), (x_left, y_top), (x_right, y_top)]
+                for (x, y) in corners:
+                    text = f'({x/(self.img_size-1):.2f}, {y/(self.img_size-1):.2f})'
+                    cv2.putText(img, text, (x + 5, y - 5), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, self.point_color, 1, cv2.LINE_AA)
+
+        if edges is not None:
+            for edge in edges:
+                from_idx, to_idx = edge
+                cv2.line(img, 
+                         tuple(((self.img_size - 1) * points[from_idx, ::-1]).astype(int)), 
+                         tuple(((self.img_size - 1) * points[to_idx, ::-1]).astype(int)), 
+                         self.box_color, thickness=self.line_thickness)  # Different color for added lines
+
+        
+        
         # Rescale image to [-1,1]
         img = 2*(img-0.5)
         return img
 
 
     def __getitem__(self, idx):
-        img, points, tour = self.rasterize(idx)
+        if self.return_box:
+            img, points, tour, box = self.rasterize(idx)
+            return img[np.newaxis,:,:], points, tour, idx, box
+        else:
+            img, points, tour = self.rasterize(idx)
+            return img[np.newaxis,:,:], points, tour, idx
             
-        return img[np.newaxis,:,:], points, tour, idx
 
 class Model_x0(nn.Module):
     def __init__(self, batch_size, num_points, img_size, line_color, line_thickness, xT):
@@ -148,6 +204,14 @@ class Model_x0(nn.Module):
         img[self.img_query.tile(self.batch_size,1,1,1) == 1] = 1
         
         return img
+    
+    def save_image(self, path):
+        model_encode = deepcopy(torch.clamp(self.encode(), -1, 1).cpu().detach())
+        model_encode -= model_encode.min()
+        model_encode /= model_encode.max()
+        save_image(model_encode[0,0,:,:], path)
+        
+        
     
 def normalize(cost, entropy_reg=0.1, n_iters=20, eps=1e-6):
     # Cost matrix is exp(-lambda*C)

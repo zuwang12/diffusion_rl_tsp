@@ -4,8 +4,8 @@
 interval=20
 num_cities=50
 num_init_sample=10
-num_epochs=10
-num_inner_epochs=10
+num_epochs=20
+num_inner_epochs=50
 now=$(date +"%F_%T")
 run_name="tsp${num_cities}_epoch${num_epochs}_${num_inner_epochs}_sample${num_init_sample}"
 

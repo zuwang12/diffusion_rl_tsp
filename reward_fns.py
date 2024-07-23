@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from utils import TSP_2opt
+from utils import TSP_2opt, do_intersect, construct_tsp_from_mst, check_for_intersection
 import random
 
 def tsp():
@@ -84,7 +84,7 @@ def tsp_constraint():
         
         return assignment_mat # [1, 50, 50] (adj_mat)
     
-    def _fn(points, model_latent, dists=None, constraint_matrix=None):
+    def _fn(points, model_latent, dists=None, constraint_matrix=None, path = None):
         penalty = 0
         # batch_size = 1
         # model_latent = torch.randn(batch_size,points.shape[0],points.shape[0])
@@ -95,41 +95,52 @@ def tsp_constraint():
         components[:] = np.arange(adj_mat.shape[0])[...,None] # (50, 1) | [[1], [2], ... , [49]]
         real_adj_mat = np.zeros_like(adj_mat) # (50, 50) 
         np.seterr(divide='ignore', invalid='ignore') # TODO: need to set error option globally
+        
+        # Ensure that mandatory paths are connected
+        if path is not None:
+            for i in range(0, len(path), 2):
+                a, b = int(path[i]), int(path[i + 1])
+                real_adj_mat[a, b] = 1  # Connect mandatory paths
+
+                ca = np.nonzero((components == a).sum(1))[0][0]
+                cb = np.nonzero((components == b).sum(1))[0][0]
+                cca = sorted(components[ca], key=lambda x: x == a)
+                ccb = sorted(components[cb], key=lambda x: x == b)
+                newc = np.array([[cca[0], ccb[0]]])
+                m, M = min(ca, cb), max(ca, cb)
+                components = np.concatenate([components[:m], components[m + 1:M], components[M + 1:], newc], 0)
+
         for edge in (-adj_mat/dists).flatten().argsort(): # [1715,  784, 1335, ..., 1326, 1224, 2499]) | 실제 거리(dists) 대비 adj_mat값이 가장 높은 순으로 iter
             a,b = edge//adj_mat.shape[0],edge%adj_mat.shape[0] # (34, 15)
-            if not (a in components and b in components): continue
+            if a==b:
+                continue
+            if not (a in components and b in components):
+                continue
+            if check_for_intersection(a, b, real_adj_mat, points): 
+                continue
             if constraint_matrix is not None:
                 if constraint_matrix[a][b] == 1:continue
             ca = np.nonzero((components==a).sum(1))[0][0] # 34
             cb = np.nonzero((components==b).sum(1))[0][0] # 15
-            if ca==cb: continue
+            if ca==cb: 
+                continue
             cca = sorted(components[ca],key=lambda x:x==a) # [34, 34]
             ccb = sorted(components[cb],key=lambda x:x==b) # [15, 15]
             newc = np.array([[cca[0],ccb[0]]]) # [34, 15]
             m,M = min(ca,cb),max(ca,cb) # (15, 34)
             real_adj_mat[a,b] = 1 # 연결됨
             components = np.concatenate([components[:m],components[m+1:M],components[M+1:],newc],0) # (49, 2)
-            if len(components)==1: break
-        real_adj_mat[components[0,1],components[0,0]] = 1 # 마지막 연결
+            if len(components)==1:
+                break
+        
+        if len(components)==1:
+            real_adj_mat[components[0,1],components[0,0]] = 1 # 마지막 연결
         real_adj_mat += real_adj_mat.T # make symmetric matrix
 
-        tour = [0]
-        while len(tour)<adj_mat.shape[0]+1:
-            n = np.nonzero(real_adj_mat[tour[-1]])[0]
-            if len(tour)>1:
-                n = n[n!=tour[-2]]
-            if set(n).issubset(set(tour)):
-                tmp_node = random.choice([x for x in range(adj_mat.shape[0]) if x not in tour]) # 가능한 연결수단이 없으면 남은 노드중에 선택하고, penalty 추가
-                tour.append(tmp_node)
-                penalty += 10
-            else:
-                tour.append(n.max())
-            if len(tour) == adj_mat.shape[0]: # finalize adding root node
-                tour.append(tour[0])
-                break
+        tour = construct_tsp_from_mst(adj_mat, real_adj_mat, dists, points, path = path)
 
         # Refine using 2-opt
-        tsp_solver = TSP_2opt(points)
+        tsp_solver = TSP_2opt(points, path=path)
         solved_tour, _ = tsp_solver.solve_2opt(tour)
 
         def has_duplicates(l):
@@ -144,12 +155,17 @@ def tsp_constraint():
         # assert not has_duplicates(solved_tour[:-1]), 'Tour not Hamiltonian' # constraint 조건에서는 penalty 받는 형태로.. TODO: 더 좋은 방법 없을까?
 
         # gt_cost = tsp_solver.evaluate([i-1 for i in gt_tour]) # TODO: one times
-        solved_cost = tsp_solver.evaluate(solved_tour)
-        # print('solved cost : ', solved_cost)
+        solved_cost = tsp_solver.evaluate(solved_tour) # TODO: hard / soft 구분
+        # Calculate the penalty for constraints
+        penalty_const = 10  # Define a penalty constant
+        penalty_count = tsp_solver.count_constraints(solved_tour)  # Count the number of constraint violations
+        penalty = penalty_count * penalty_const  # Calculate the penalty
+        total_cost = solved_cost + penalty  # Calculate the total cost including penalty
+        
         return -np.array([solved_cost]), {
             'solved_tour' : np.array(solved_tour)+1, 
             # 'points' : points, 
             # 'gt_cost' : gt_cost,
-            'solved_cost' : solved_cost + penalty,
+            'solved_cost' : total_cost,
             }
     return _fn

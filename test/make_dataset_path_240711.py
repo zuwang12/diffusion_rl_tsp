@@ -7,7 +7,7 @@ import os
 import contextlib
 from tqdm import tqdm
 import argparse
-
+import sys
 
 def sampling_edge(gt_tour, points, sample_cnt=1):
     # Get the length of gt_tour
@@ -137,9 +137,9 @@ def save_tour_image(tour, points, edges, file_path, dataset):
 if __name__=='__main__':
     
     parser = argparse.ArgumentParser(description='Solve TSP with path constraint.')
-    parser.add_argument('--num_cities', type=int, required=True, help='Number of cities in the TSP instance')
-    parser.add_argument('--save_image', default=False, type=bool, required=False)
-    parser.add_argument('--img_size', default=64, type=int, required=False)
+    parser.add_argument('--num_cities', default=100, type=int, help='Number of cities in the TSP instance')
+    parser.add_argument('--save_image', default=False, type=bool)
+    parser.add_argument('--img_size', default=64, type=int)
     args = parser.parse_args()
     
     # Set constants for drawing and loading the dataset
@@ -155,7 +155,7 @@ if __name__=='__main__':
 
     # Create an instance of the TSPDataset
     test_dataset = TSPDataset(
-        data_file=f'./data/{FILE_NAME}', 
+        data_file=f'./{FILE_NAME}', 
         img_size=IMG_SIZE, 
         point_radius=POINT_RADIUS, 
         point_color=POINT_COLOR,
@@ -174,13 +174,13 @@ if __name__=='__main__':
             img, points, gt_tour, sample_idx = test_dataset[i]
             sample_cnt = i%4+1
             # Sample initial edges and solve the TSP
-            edges = sampling_edge(gt_tour, points, sample_cnt=sample_cnt)
-            distance_matrix = calculate_distance_matrix(points, edges)
-            write_tsplib_file(distance_matrix, './test/tsp_problem.tsp')
-            with open(os.devnull, 'w') as fnull, contextlib.redirect_stdout(fnull), contextlib.redirect_stderr(fnull):
-                solver = TSPSolver.from_tspfile('./test/tsp_problem.tsp')
-                solution = solver.solve()
-            route = np.append(solution.tour, solution.tour[0]) + 1
+            # edges = sampling_edge(gt_tour, points, sample_cnt=sample_cnt)
+            # distance_matrix = calculate_distance_matrix(points, edges)
+            # write_tsplib_file(distance_matrix, './test/tsp_problem.tsp')
+            # with open(os.devnull, 'w') as fnull, contextlib.redirect_stdout(fnull), contextlib.redirect_stderr(fnull):
+            #     solver = TSPSolver.from_tspfile('./test/tsp_problem.tsp')
+            #     solution = solver.solve()
+            # route = np.append(solution.tour, solution.tour[0]) + 1
             
             # Continue sampling edges until a valid tour is found
             while True:

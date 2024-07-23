@@ -7,10 +7,9 @@ from copy import deepcopy
 import random
 
 class TSPDataset(torch.utils.data.Dataset):
-    def __init__(self, data_file, img_size, return_box=False, show_position=False, point_radius=1, point_color=1, point_circle=True, line_thickness=2, line_color=0.5, box_color=0.75, max_points=100):
+    def __init__(self, data_file, img_size, constraint_type=None, show_position=False, point_radius=1, point_color=1, point_circle=True, line_thickness=2, line_color=0.5, box_color=0.75, max_points=100):
         self.data_file = data_file
         self.img_size = img_size
-        self.return_box = return_box
         self.point_radius = point_radius
         self.point_color = point_color
         self.point_circle = point_circle
@@ -18,6 +17,7 @@ class TSPDataset(torch.utils.data.Dataset):
         self.line_color = line_color
         self.box_color = box_color
         self.max_points = max_points
+        self.constraint_type = constraint_type
         self.show_position = show_position
         
         self.file_lines = open(data_file).read().splitlines()
@@ -26,7 +26,7 @@ class TSPDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.file_lines)
     
-    def rasterize(self, idx, return_img = True):
+    def rasterize(self, idx):
         # Select sample
         line = self.file_lines[idx]
         # Clear leading/trailing characters
@@ -40,45 +40,25 @@ class TSPDataset(torch.utils.data.Dataset):
         tour = line.split(' output ')[1]
         tour = tour.split(' ')
         tour = np.array([int(t) for t in tour])
-        if len(line.split(' output '))>2:
-            # Extract box
-            box = line.split(' output ')[2]
-            box = box.split(' ')
-            box = np.array([float(t) for t in box])
         
-        if self.return_box:
-            img = self.draw_tour(tour=tour, points=points, box=box)
-            return img, points, tour, box
-        
-        if return_img:
+        if self.constraint_type==None:
+            constraint = None
             img = self.draw_tour(tour=tour, points=points)
-            return img, points, tour
-        # # Rasterize lines
-        # img = np.zeros((self.img_size, self.img_size))
-        # for i in range(tour.shape[0]-1):
-        #     from_idx = tour[i]-1
-        #     to_idx = tour[i+1]-1
-
-        #     cv2.line(img, 
-        #              tuple(((self.img_size-1)*points[from_idx,::-1]).astype(int)), 
-        #              tuple(((self.img_size-1)*points[to_idx,::-1]).astype(int)), 
-        #              color=self.line_color, thickness=self.line_thickness)
-
-        # # Rasterize points
-        # for i in range(points.shape[0]):
-        #     if self.point_circle:
-        #         cv2.circle(img, tuple(((self.img_size-1)*points[i,::-1]).astype(int)), 
-        #                    radius=self.point_radius, color=self.point_color, thickness=-1)
-        #     else:
-        #         row = round((self.img_size-1)*points[i,0])
-        #         col = round((self.img_size-1)*points[i,1])
-        #         img[row,col] = self.point_color
             
-        # # Rescale image to [-1,1]
-        # img = 2*(img-0.5)
-        return points, tour
+        else:
+            # Extract constraint
+            constraint = line.split(' output ')[2]
+            constraint = constraint.split(' ')
+            constraint = np.array([float(t) for t in constraint])
+            
+            if self.constraint_type=='box':        
+                img = self.draw_tour(tour=tour, points=points, box=constraint)
+            else:
+                img = self.draw_tour(tour=tour, points=points)
 
-    def draw_tour(self, tour, points, box = None, edges = None):
+        return img, points, tour, constraint
+
+    def draw_tour(self, tour, points, box = None, paths = None):
         img = np.zeros((self.img_size, self.img_size))
         # Rasterize lines
         for i in range(tour.shape[0]-1):
@@ -106,11 +86,12 @@ class TSPDataset(torch.utils.data.Dataset):
                 
                     # Conditionally add text to image
             if self.show_position:
-                text = f'({points[i, 1]:.2f}, {points[i, 0]:.2f})'
+                text = f'{i}_({points[i, 1]:.2f}, {points[i, 0]:.2f})'
+                # text = f'({points[i, 1]:.2f}, {points[i, 0]:.2f})'
                 cv2.putText(img, text, (point_coords[0] + 5, point_coords[1] - 5), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, self.point_color, 1, cv2.LINE_AA)
         
-        # Rasterize box
+        # Rasterize box condition
         if box is not None:
             y_bottom = int(box[0] * (self.img_size - 1))
             y_top = int(box[1] * (self.img_size - 1))
@@ -118,35 +99,33 @@ class TSPDataset(torch.utils.data.Dataset):
             x_right = int(box[3] * (self.img_size - 1))
             img[y_bottom:y_top, x_left:x_right] = self.box_color
 
-            if self.show_position:
-                corners = [(x_left, y_bottom), (x_right, y_bottom), (x_left, y_top), (x_right, y_top)]
-                for (x, y) in corners:
-                    text = f'({x/(self.img_size-1):.2f}, {y/(self.img_size-1):.2f})'
-                    cv2.putText(img, text, (x + 5, y - 5), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, self.point_color, 1, cv2.LINE_AA)
+            # if self.show_position:
+            #     corners = [(x_left, y_bottom), (x_right, y_bottom), (x_left, y_top), (x_right, y_top)]
+            #     for (x, y) in corners:
+            #         text = f'({x/(self.img_size-1):.2f}, {y/(self.img_size-1):.2f})'
+            #         cv2.putText(img, text, (x + 5, y - 5), 
+            #                     cv2.FONT_HERSHEY_SIMPLEX, 1, self.point_color, 1, cv2.LINE_AA)
+        
+        # Rasterize path condition
+        if paths is not None:
+            path_pairs = []
+            for i in range(0, len(paths), 2):
+                path_pairs.append((int(paths[i]), int(paths[i+1])))
 
-        if edges is not None:
-            for edge in edges:
-                from_idx, to_idx = edge
+            for path in path_pairs:
+                from_idx, to_idx = path
                 cv2.line(img, 
                          tuple(((self.img_size - 1) * points[from_idx, ::-1]).astype(int)), 
                          tuple(((self.img_size - 1) * points[to_idx, ::-1]).astype(int)), 
                          self.box_color, thickness=self.line_thickness)  # Different color for added lines
 
-        
-        
         # Rescale image to [-1,1]
         img = 2*(img-0.5)
         return img
 
-
     def __getitem__(self, idx):
-        if self.return_box:
-            img, points, tour, box = self.rasterize(idx)
-            return img[np.newaxis,:,:], points, tour, idx, box
-        else:
-            img, points, tour = self.rasterize(idx)
-            return img[np.newaxis,:,:], points, tour, idx
+        img, points, tour, constraint = self.rasterize(idx)
+        return img[np.newaxis,:,:], points, tour, idx, constraint
             
 
 class Model_x0(nn.Module):

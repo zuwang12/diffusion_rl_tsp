@@ -2,9 +2,20 @@
 *.csv
 *.txt
 *.ipynb
+*.res
+*.sol
+*.pul
+*.sav
+*.pt
 
 # directory
 __pycache__
 .vscode
 ckpt
 logs
+images
+
+# specific files
+nohup.out
+run.sh
+tsp_problem.tsp

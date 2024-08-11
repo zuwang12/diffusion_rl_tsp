@@ -25,22 +25,33 @@ if torch.cuda.is_available():
 
 
 class TSP_2opt():
-    def __init__(self, points, constraint_matrix=None, path = None):
+    def __init__(self, points, constraint_type, constraint = None):
+        # constraint_matrix=None, path = None, cluster = None
         self.points = points
         self.dist_mat = scipy.spatial.distance_matrix(points, points)
+        self.constraint_type = constraint_type
         # If no constraint_matrix is provided, create one with all zeros (all connections allowed)
-        if constraint_matrix is None:
-            self.constraint_matrix = np.zeros((points.shape[0], points.shape[0]))
-        else:
-            self.constraint_matrix = constraint_matrix
-
-        self.path_pairs = []
-        if path is not None:
-            for i in range(0, len(path), 2):
-                self.path_pairs.append((int(path[i]), int(path[i+1])))
-        self.path = path
+        # if constraint_matrix is None:
+        #     self.constraint_matrix = np.zeros((points.shape[0], points.shape[0]))
+        if constraint_type == 'box':
+            self.constraint_matrix = constraint
+        elif constraint_type == 'path':
+            self.path_pairs = []
+            for i in range(0, len(constraint), 2):
+                self.path_pairs.append((int(constraint[i]), int(constraint[i+1])))
+            self.path = constraint
+        elif constraint_type == 'cluster':
+            self.cluster = constraint
     
     def evaluate(self, route):
+        """_summary_
+
+        Args:
+            route (_type_): 0, 1, ... len(route)-1
+
+        Returns:
+            _type_: _description_
+        """
         total_cost = 0
         for i in range(len(route)-1):
             total_cost += self.dist_mat[route[i],route[i+1]]
@@ -48,11 +59,13 @@ class TSP_2opt():
 
     def count_constraints(self, route):
         count = 0
-        for i in range(len(route) - 1):
-            if self.constraint_matrix[route[i], route[i + 1]] == 1:
-                count += 1
+        if self.constraint_type == 'box':
+            for i in range(len(route) - 1):
+                if self.constraint_matrix[route[i], route[i + 1]] == 1:
+                    count += 1
+                    
         # Check for mandatory path overlaps
-        if self.path is not None:
+        if self.constraint_type == 'path':
             for path_pair in self.path_pairs:
                 a, b = path_pair
                 segment1 = (self.points[a], self.points[b])
@@ -60,6 +73,10 @@ class TSP_2opt():
                     segment2 = (self.points[route[j]], self.points[route[j + 1]])
                     if do_lines_intersect(segment1[0], segment1[1], segment2[0], segment2[1]):
                         count += 1
+                        
+        if self.constraint_type == 'cluster':
+            violations = check_cluster_degree_violations(self.cluster, route)
+            count += violations
         return count
     
     def is_valid_route(self, route):
@@ -78,27 +95,34 @@ class TSP_2opt():
         while improved:
             improved = False
             for i in range(1, len(route)-2):
-                if route[i] in self.path:
-                    continue
+                ############## path #############
+                if self.constraint_type=='path':
+                    if route[i] in self.path:
+                        continue
+                ############## path #############
                 for j in range(i+1, len(route)):
                     if j-i == 1: 
                         continue # changes nothing, skip then
+                    
+                    ############## path #############
                     # Check if the edge (i, j) or (j, i) is in path_pairs
-                    if route[j] in self.path:
-                        continue
+                    if self.constraint_type=='path':
+                        if route[j] in self.path:
+                            continue
+                    ############## path #############
 
                     new_route = route[:]
                     new_route[i:j] = route[j-1:i-1:-1] # this is the 2optSwap
                     new_constraints = self.count_constraints(new_route)
-                    if self.is_valid_route(new_route) and self.evaluate(new_route) < self.evaluate(best):
-                        best = new_route
-                        steps += 1
-                        improved = True
-                    elif new_constraints < best_constraints:
-                        best = new_route
-                        best_constraints = new_constraints
-                        steps += 1
-                        improved = True
+
+                    if (self.evaluate(new_route) < self.evaluate(best)) or (new_constraints < best_constraints):
+                        if self.constraint_type != 'box' or self.is_valid_route(new_route):
+                            best = new_route
+                            improved = True
+                            steps += 1
+                            if new_constraints < best_constraints:
+                                best_constraints = new_constraints
+                    
             route = best
         return best, steps
     
@@ -398,6 +422,12 @@ def get_cost(points, tour):
 
 # Helper function to determine the orientation of the ordered triplet (p, q, r)
 def orientation(p, q, r):
+    """
+    Determine the orientation of the triplet (p, q, r).
+    0 -> p, q and r are collinear
+    1 -> Clockwise
+    2 -> Counterclockwise
+    """
     val = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
     if val == 0:
         return 0  # Collinear
@@ -405,11 +435,18 @@ def orientation(p, q, r):
 
 # Helper function to check if point q lies on segment pr
 def on_segment(p, q, r):
+    """
+    Check if point q lies on segment pr.
+    """
     return (q[0] <= max(p[0], r[0]) and q[0] >= min(p[0], r[0]) and
             q[1] <= max(p[1], r[1]) and q[1] >= min(p[1], r[1]))
 
 # Helper function to check if two line segments (p1q1 and p2q2) intersect
 def do_intersect(p1, q1, p2, q2):
+    """
+    Check if line segments (p1q1) and (p2q2) intersect.
+    """
+    
     o1 = orientation(p1, q1, p2)
     o2 = orientation(p1, q1, q2)
     o3 = orientation(p2, q2, p1)
@@ -492,28 +529,50 @@ def find_optimal_box(points, gt_tour):
         print("No valid rectangle found")
     return best_coords
 
-# Function to calculate the distance matrix with penalties for intersections with the optimal box
-def calculate_distance_matrix(points, optimal_box=None):
+def calculate_distance_matrix(points, edges=None, box=None):
+    """
+    Calculate the distance matrix for the given points with optional penalties for edges and intersections.
+    
+    Parameters:
+    - points: A numpy array of shape (num_points, 2) representing the coordinates of the points.
+    - edges: An optional list of tuples representing edges that should not have penalties. Default is None.
+    - box: A tuple (x_left, x_right, y_bottom, y_top) representing the coordinates of a rectangular box.
+           If an edge intersects this box, a penalty is added. Default is None.
+           
+    Returns:
+    - distance_matrix: A numpy array of shape (num_points, num_points) representing the distance matrix
+                       with penalties applied for edges not in the provided list and intersections with the box.
+    """
+    
     num_points = points.shape[0]
     distance_matrix = np.zeros((num_points, num_points))
-    # x_left, x_right, y_bottom, y_top = optimal_box
+
     for i in range(num_points):
         for j in range(i + 1, num_points):
+            # Calculate the Euclidean distance between points i and j
             distance = np.linalg.norm(points[i] - points[j])
-            if optimal_box is not None:
-                if does_intersect_box(points[i], points[j], optimal_box):
-                    distance += 100
+            
+            # If box is provided, check if the edge intersects the box
+            if box is not None:
+                if does_intersect_box(points[i], points[j], box):
+                    distance += 100  # Add penalty for intersecting the box
+            
+            # If edges is provided and the edge (i, j) is not in the provided list of edges, add a penalty
+            if edges is not None and ([i, j] not in edges and [j, i] not in edges):
+                distance += 100
+            
             distance_matrix[i, j] = distance_matrix[j, i] = distance
+    
     return distance_matrix
 
-def calculate_distance_matrix2(points, optimal_box):
+def calculate_distance_matrix2(points, box):
     """ 1 : impossibile, 0 : possible
     return both continuous, discrete distance matrix
     used for train_constraint.py
 
     Args:
         points (_type_): _description_
-        optimal_box (_type_): _description_
+        box (_type_): _description_
 
     Returns:
         _type_: _description_
@@ -521,12 +580,12 @@ def calculate_distance_matrix2(points, optimal_box):
     num_points = points.shape[0]
     distance_matrix = np.zeros((num_points, num_points))
     intersection_matrix = np.zeros((num_points, num_points))  # New matrix to indicate intersection with the box
-    x_left, x_right, y_bottom, y_top = optimal_box
+    x_left, x_right, y_bottom, y_top = box
     
     for i in range(num_points):
         for j in range(i + 1, num_points):
             distance = np.linalg.norm(points[i] - points[j])
-            if does_intersect_box(points[i], points[j], optimal_box):
+            if does_intersect_box(points[i], points[j], box):
                 distance += 100
                 intersection_matrix[i, j] = intersection_matrix[j, i] = 1  # Mark as intersecting with the box
             distance_matrix[i, j] = distance_matrix[j, i] = distance
@@ -535,6 +594,9 @@ def calculate_distance_matrix2(points, optimal_box):
 
 # Function to write the distance matrix to a TSPLIB format file
 def write_tsplib_file(distance_matrix, filename, scale_factor=1000):
+    """
+    Write the distance matrix to a TSPLIB format file.
+    """
     size = len(distance_matrix)
     with open(filename, 'w') as f:
         f.write("NAME: TSP\nTYPE: TSP\nDIMENSION: {}\nEDGE_WEIGHT_TYPE: EXPLICIT\nEDGE_WEIGHT_FORMAT: FULL_MATRIX\nEDGE_WEIGHT_SECTION\n".format(size))
@@ -553,6 +615,10 @@ def check_tour_box_overlap(tour, box, points):
 
 # Function to check if there are any intersections in the tour
 def check_tour_intersections(tour, points):
+    """
+    Check if there are any intersections between the line segments in the given tour.
+    Ignore intersections between consecutive segments.
+    """
     for i in range(len(tour) - 1):
         p1 = points[tour[i] - 1]
         q1 = points[tour[i + 1] - 1]
@@ -593,18 +659,25 @@ def is_valid_tsp_solution(tour, num_nodes):
     return len(set(tour)) == num_nodes and len(tour) == num_nodes + 1 and tour[0] == tour[-1]
 
 # TSP solution construction from real_adj_mat
-def construct_tsp_from_mst(adj_mat, real_adj_mat, dists, points, constraint_matrix=None, path=None):
+def construct_tsp_from_mst(adj_mat, real_adj_mat, dists, points, constraint_type = None, constraint = None):
+    if constraint_type == 'box':
+        constraint_matrix = constraint
+    elif constraint_type == 'path':
+        path = constraint
+    elif constraint_type == 'cluster':
+        cluster = constraint
+    
     num_nodes = real_adj_mat.shape[0]
     tour = [0]
     visited = set(tour)
     adj_over_dists = adj_mat / dists
 
-    mandatory_edges = set()
-    if path is not None:
+    if constraint_type == 'path':
+        mandatory_paths = set()
         for i in range(0, len(path), 2):
             a, b = int(path[i]), int(path[i + 1])
-            mandatory_edges.add((a, b))
-            mandatory_edges.add((b, a))
+            mandatory_paths.add((a, b))
+            mandatory_paths.add((b, a))
 
     while len(tour) < num_nodes:
         current_node = tour[-1]
@@ -612,10 +685,13 @@ def construct_tsp_from_mst(adj_mat, real_adj_mat, dists, points, constraint_matr
         next_node = None
 
         # Check for mandatory edges first
-        for neighbor in neighbors:
-            if (current_node, neighbor) in mandatory_edges and neighbor not in visited:
-                next_node = neighbor
-                break
+        if constraint_type == 'path':
+            for neighbor in neighbors:
+                if neighbor in visited:
+                    continue
+                if (current_node, neighbor) in mandatory_paths:
+                    next_node = neighbor
+                    break
 
         # If no mandatory edge found, proceed as usual
         if next_node is None:
@@ -631,7 +707,7 @@ def construct_tsp_from_mst(adj_mat, real_adj_mat, dists, points, constraint_matr
             sorted_remaining_nodes = sorted(remaining_nodes, key=lambda node: adj_over_dists[current_node, node], reverse=True)
 
             for node in sorted_remaining_nodes:
-                if constraint_matrix is None or constraint_matrix[current_node, node] == 0:
+                if constraint_type!='box' or constraint_matrix[current_node, node] == 0:
                     next_node = node
                     break
             else:  # If no valid next node is found, randomly select from remaining nodes
@@ -672,3 +748,83 @@ def adjust_distances_for_clusters(distance_matrix, labels, penalty=100):
                 adjusted_matrix[j, i] += penalty
                 
     return adjusted_matrix
+
+def check_cluster_degree_violations(cluster, solved_tour):
+    cluster = [int(x) for x in cluster]
+    # Initialize the dictionary to count the degree for each cluster
+    cluster_degrees = {i: {'in': 0, 'out': 0} for i in np.unique(cluster)}
+
+    # Check each edge in the solved_tour
+    for i in range(len(solved_tour) - 1):
+        current_city = solved_tour[i]
+        next_city = solved_tour[i + 1]
+
+        current_cluster = cluster[current_city]
+        next_cluster = cluster[next_city]
+
+        if current_cluster != next_cluster:
+            # If moving to a different cluster, increment out-degree of current cluster
+            # and in-degree of the next cluster
+            cluster_degrees[current_cluster]['out'] += 1
+            cluster_degrees[next_cluster]['in'] += 1
+
+    # Check the last connection (to form a cycle)
+    first_city = solved_tour[0]
+    last_city = solved_tour[-1]
+
+    first_cluster = cluster[first_city]
+    last_cluster = cluster[last_city]
+
+    if last_cluster != first_cluster:
+        cluster_degrees[last_cluster]['out'] += 1
+        cluster_degrees[first_cluster]['in'] += 1
+
+    # Calculate the number of violations
+    violations = 0
+    for cluster_id, degrees in cluster_degrees.items():
+        if degrees['in'] != 1 or degrees['out'] != 1:
+            violations += 1
+            # print(f"Cluster {cluster_id} has {degrees['in']} in-degrees and {degrees['out']} out-degrees.")
+
+    return violations
+
+
+def sampling_edge(gt_tour, points, sample_cnt=1):
+    """ function to sample edge path. used at path constraint generator
+
+    Args:
+        gt_tour (_type_): _description_
+        points (_type_): _description_
+        sample_cnt (int, optional): _description_. Defaults to 1.
+
+    Returns:
+        _type_: _description_
+    """
+    # Get the length of gt_tour
+    n = len(gt_tour)
+    edges = []
+    while len(edges)<sample_cnt:
+        while True:
+            # Randomly select two different indices
+            idx1, idx2 = random.sample(range(n), 2)
+            
+            # Ensure the selected indices are not consecutive
+            if abs(idx1 - idx2) != 1:
+                break
+        
+        num1 = gt_tour[idx1] - 1
+        num2 = gt_tour[idx2] - 1
+        new_edge = [min(num1, num2), max(num1, num2)]
+
+        if new_edge not in edges and not check_edge_intersection(new_edge, edges, points):
+            edges.append(new_edge)
+    
+    return edges
+
+def check_edge_intersection(new_edge, existing_edges, points):
+    p1, q1 = points[new_edge[0]], points[new_edge[1]]
+    for edge in existing_edges:
+        p2, q2 = points[edge[0]], points[edge[1]]
+        if do_intersect(p1, q1, p2, q2):
+            return True
+    return False

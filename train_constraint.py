@@ -31,7 +31,10 @@ def load_config():
     parser.add_argument("--start_idx", type=int, default=0, help="start index for iteration")
     parser.add_argument("--end_idx", type=int, default=1280, help="end index for iteration")
     parser.add_argument("--num_cities", type=int, default=20, help="number of cities")
-    parser.add_argument("--run_name", type=str, default=None, help="Name for the run")
+    parser.add_argument("--num_epochs", type=int, default=20, help="number of epoch")
+    parser.add_argument("--num_inner_epochs", type=int, default=5, help="number of inner epoch")
+    parser.add_argument("--run_name", type=str, default='', help="Name for the run")
+    parser.add_argument("--constraint_type", type=str, default='basic')
     args = parser.parse_args()
     # mapping from config name to config path
     config_mapping = {"tsp":  "./configs/train_configs.yaml"}
@@ -44,6 +47,9 @@ def load_config():
     config.end_idx = args.end_idx
     config.num_cities = args.num_cities
     config.run_name = args.run_name
+    config.num_epochs = args.num_epochs
+    config.num_inner_epochs = args.num_inner_epochs
+    config.constraint_type = args.constraint_type
     return config
 
 if __name__=='__main__':
@@ -56,12 +62,13 @@ if __name__=='__main__':
     tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
     now = time.strftime('%y%m%d_%H%M%S')
     if config.run_name==None:
-        config.run_name += f'_{now}'
+        config.run_name = f'test_{now}'
     device = f'cuda' if torch.cuda.is_available() else 'cpu'
 
-    config.file_name = f'tsp{config.num_cities}_{config.constraint_type}_constraint_{date_per_type[config.constraint_type]}.txt'
+    config.file_name = f'tsp{config.num_cities}_{config.constraint_type}_constraint_{date_per_type.get(config.constraint_type)}.txt'
     config.result_file_name = f'ours_tsp{config.num_cities}_{config.constraint_type}_constraint_{config.start_idx}_{config.end_idx}.csv'
     print(json.dumps(config, indent=4))
+    print(f'Result file : ./Results/{config.constraint_type}/{config.run_name}/{config.result_file_name}')
     
     ################## fix seed ####################
     np.random.seed(config.seed)
@@ -106,7 +113,7 @@ if __name__=='__main__':
     num_points = test_dataset.rasterize(0)[1].shape[0]
     print('Created dataset')
     
-    sample_idxes, solved_costs, init_costs, gt_costs, final_gaps, init_gaps, epochs, inner_epochs = [], [], [], [], [], [], [], []
+    sample_idxes, solved_costs, init_costs, gt_costs, final_gaps, init_gaps, epochs, inner_epochs, basic_costs, penalty_counts = [], [], [], [], [], [], [], [], [], []
 
     for img, points, gt_tour, sample_idx, constraint in tqdm(test_dataloader):
         if not (config.start_idx <= int(sample_idx) < config.end_idx):
@@ -115,7 +122,7 @@ if __name__=='__main__':
         ########### prepare constraint ##############
         if config.constraint_type == 'box':
             distance_matrix, intersection_matrix = calculate_distance_matrix2(points[0], constraint[0])
-        
+            
         ########### add prior model & prepare image ###########
         xT = torch.randn_like(img).float().to(device) 
         model = Model_x0(
@@ -128,7 +135,10 @@ if __name__=='__main__':
         model.eval()
 
         points, gt_tour, constraint = points.numpy()[0], gt_tour.numpy()[0], constraint.numpy()[0]
-        solver = TSP_2opt(points)
+        if config.constraint_type == 'box':
+            constraint = intersection_matrix
+            
+        solver = TSP_2opt(points, constraint_type=config.constraint_type, constraint=constraint)
         gt_cost = solver.evaluate([i-1 for i in gt_tour])
         img_query = torch.zeros_like(img)
         img_query[img == 1] = 1
@@ -139,10 +149,12 @@ if __name__=='__main__':
             for j in range(dists.shape[0]):
                 dists[i,j] = np.linalg.norm(points[i]-points[j])
 
-        if config.constraint_type == 'box':
-            gt_img = test_dataset.draw_tour(tour = gt_tour, points = points, box = constraint)
-        if config.constraint_type == 'path':
-            gt_img = test_dataset.draw_tour(tour = gt_tour, points = points, paths = constraint)
+        # if config.constraint_type == 'box':
+        #     gt_img = test_dataset.draw_tour(tour = gt_tour, points = points, box = constraint)
+        # if config.constraint_type == 'path':
+        #     gt_img = test_dataset.draw_tour(tour = gt_tour, points = points, paths = constraint)
+        # if config.constraint_type == 'cluster':
+        #     gt_img = test_dataset.draw_tour(tour = gt_tour, points = points, cluster = constraint)
         
         reward_fn = getattr(reward_fns, config.reward_type)()
         final_solved_cost = 10**10
@@ -172,13 +184,16 @@ if __name__=='__main__':
                 latents = torch.stack(latents, dim=1)  
                 log_probs = torch.stack(log_probs, dim=1)  
                 timesteps = pipeline.scheduler.timesteps.repeat(config.batch_size_sample, 1)
-
+                
                 if config.constraint_type == 'box':
-                    rewards = torch.as_tensor(reward_fn(points, model.latent, dists, intersection_matrix)[0], device=device)
-                elif config.constraint_type == 'path':
-                    rewards = torch.as_tensor(reward_fn(points, model.latent, dists, path = constraint)[0], device=device)
-                elif config.constraint_type == 'cluster':
-                    rewards = torch.as_tensor(reward_fn(points, model.latent, dists, cluster = constraint)[0], device=device)
+                    constraint = intersection_matrix
+                rewards = torch.as_tensor(reward_fn(points, model.latent, dists, config.constraint_type, constraint)[0], device=device)
+                # if config.constraint_type == 'box':
+                #     rewards = torch.as_tensor(reward_fn(points, model.latent, dists, config.constraint_type, constraint)[0], device=device)
+                # elif config.constraint_type == 'path':
+                #     rewards = torch.as_tensor(reward_fn(points, model.latent, dists, path = constraint)[0], device=device)
+                # elif config.constraint_type == 'cluster':
+                #     rewards = torch.as_tensor(reward_fn(points, model.latent, dists, cluster = constraint)[0], device=device)
                     
                 if config.use_best_sample & (float(rewards)>best_reward):
                     best_reward = float(rewards)
@@ -272,14 +287,16 @@ if __name__=='__main__':
                         loss.backward()
                         optimizer.step()
                         
-                    output = reward_fn(points, model.latent, dists, path = constraint)[1]
-                    solved_cost, solved_tour = output['solved_cost'], output['solved_tour']
+                    output = reward_fn(points, model.latent, dists, config.constraint_type, constraint = constraint)[1]
+                    solved_cost, solved_tour, basic_cost, penalty_count = output['solved_cost'], output['solved_tour'], output['basic_cost'], output['penalty_count']
                     gap = 100*(solved_cost-gt_cost) / gt_cost
                     if solved_cost<final_solved_cost:
                         best_epoch = epoch
                         best_inner_epoch = inner_epoch
                         final_solved_cost = solved_cost
                         final_gap = gap
+                        final_basic_cost = basic_cost
+                        final_penalty_count = penalty_count
         # test_dataset.draw_tour(solved_tour, points,)    
         sample_idxes.append(int(sample_idx))
         solved_costs.append(final_solved_cost)
@@ -289,6 +306,8 @@ if __name__=='__main__':
         init_gaps.append(init_gap)
         epochs.append(best_epoch)
         inner_epochs.append(best_inner_epoch)
+        basic_costs.append(final_basic_cost)
+        penalty_counts.append(final_penalty_count)
         
         del loss
         gc.collect()
@@ -302,6 +321,8 @@ if __name__=='__main__':
                 'solved_cost' : solved_costs,
                 'init_cost' : init_costs,
                 'gt_cost' : gt_costs,
+                'basic_cost' : basic_costs,
+                'penalty_count' : penalty_counts,
                 'final_gap(%)' : final_gaps,
                 'init_gap(%)' : init_gaps,
             })
@@ -318,6 +339,8 @@ if __name__=='__main__':
             'solved_cost' : solved_costs,
             'init_cost' : init_costs,
             'gt_cost' : gt_costs,
+            'basic_cost' : basic_costs,
+            'penalty_count' : penalty_counts,
             'final_gap(%)' : final_gaps,
             'init_gap(%)' : init_gaps,
         })

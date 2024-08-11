@@ -84,7 +84,14 @@ def tsp_constraint():
         
         return assignment_mat # [1, 50, 50] (adj_mat)
     
-    def _fn(points, model_latent, dists=None, constraint_matrix=None, path = None):
+    def _fn(points, model_latent, dists, constraint_type = None, constraint = None):
+        if constraint_type == 'box':
+            constraint_matrix = constraint
+        elif constraint_type == 'path':
+            path = constraint
+        elif constraint_type == 'cluster':
+            cluster = constraint
+            
         penalty = 0
         # batch_size = 1
         # model_latent = torch.randn(batch_size,points.shape[0],points.shape[0])
@@ -97,7 +104,8 @@ def tsp_constraint():
         np.seterr(divide='ignore', invalid='ignore') # TODO: need to set error option globally
         
         # Ensure that mandatory paths are connected
-        if path is not None:
+        if constraint_type == 'path':
+        # if path is not None:
             for i in range(0, len(path), 2):
                 a, b = int(path[i]), int(path[i + 1])
                 real_adj_mat[a, b] = 1  # Connect mandatory paths
@@ -110,16 +118,29 @@ def tsp_constraint():
                 m, M = min(ca, cb), max(ca, cb)
                 components = np.concatenate([components[:m], components[m + 1:M], components[M + 1:], newc], 0)
 
+        if constraint_type == 'cluster':
+            selected_nodes = set()  # Track selected clusters
+        
         for edge in (-adj_mat/dists).flatten().argsort(): # [1715,  784, 1335, ..., 1326, 1224, 2499]) | 실제 거리(dists) 대비 adj_mat값이 가장 높은 순으로 iter
             a,b = edge//adj_mat.shape[0],edge%adj_mat.shape[0] # (34, 15)
             if a==b:
                 continue
             if not (a in components and b in components):
                 continue
+            
+            # TODO: 공통 ? for box?
             if check_for_intersection(a, b, real_adj_mat, points): 
                 continue
-            if constraint_matrix is not None:
-                if constraint_matrix[a][b] == 1:continue
+            
+            if constraint_type == 'box':
+                if constraint_matrix[a][b] == 1:
+                    continue
+                
+            # Ensure only one node per cluster is selected
+            if constraint_type == 'cluster':
+                if cluster[a] in selected_nodes and cluster[b] in selected_nodes:
+                    continue
+                
             ca = np.nonzero((components==a).sum(1))[0][0] # 34
             cb = np.nonzero((components==b).sum(1))[0][0] # 15
             if ca==cb: 
@@ -130,6 +151,12 @@ def tsp_constraint():
             m,M = min(ca,cb),max(ca,cb) # (15, 34)
             real_adj_mat[a,b] = 1 # 연결됨
             components = np.concatenate([components[:m],components[m+1:M],components[M+1:],newc],0) # (49, 2)
+            
+            # Mark the clusters as selected
+            if constraint_type == 'cluster':
+                selected_nodes.add(cluster[a])
+                selected_nodes.add(cluster[b])
+            
             if len(components)==1:
                 break
         
@@ -137,10 +164,10 @@ def tsp_constraint():
             real_adj_mat[components[0,1],components[0,0]] = 1 # 마지막 연결
         real_adj_mat += real_adj_mat.T # make symmetric matrix
 
-        tour = construct_tsp_from_mst(adj_mat, real_adj_mat, dists, points, path = path)
+        tour = construct_tsp_from_mst(adj_mat, real_adj_mat, dists, points, constraint_type, constraint)
 
         # Refine using 2-opt
-        tsp_solver = TSP_2opt(points, path=path)
+        tsp_solver = TSP_2opt(points, constraint_type, constraint)
         solved_tour, _ = tsp_solver.solve_2opt(tour)
 
         def has_duplicates(l):
@@ -167,5 +194,7 @@ def tsp_constraint():
             # 'points' : points, 
             # 'gt_cost' : gt_cost,
             'solved_cost' : total_cost,
+            'basic_cost' : solved_cost,
+            'penalty_count' : penalty_count,
             }
     return _fn

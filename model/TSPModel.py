@@ -58,8 +58,20 @@ class TSPDataset(torch.utils.data.Dataset):
 
         return img, points, tour, constraint
 
-    def draw_tour(self, tour, points, box = None, paths = None):
+    def draw_tour(self, tour, points, box = None, paths = None, cluster = None):
         img = np.zeros((self.img_size, self.img_size))
+        
+        cluster_colors = {
+            0: 0.9,    # Gray shade for cluster 0
+            1: 0.1,    # Gray shade for cluster 1
+            2: 0.8,    # Gray shade for cluster 2
+            3: 0.2,    # Gray shade for cluster 3
+            4: 0.7,    # Gray shade for cluster 4
+            5: 0.3,    # Gray shade for cluster 5
+            6: 0.6,    # Gray shade for cluster 6
+            7: 0.4     # Gray shade for cluster 7
+        }
+    
         # Rasterize lines
         for i in range(tour.shape[0]-1):
             if tour.min()==1:
@@ -76,9 +88,11 @@ class TSPDataset(torch.utils.data.Dataset):
         # Rasterize points
         for i in range(points.shape[0]):
             point_coords = tuple(((self.img_size-1)*points[i,::-1]).astype(int))
+            color = cluster_colors[cluster[i]] if cluster is not None else self.point_color
+
             if self.point_circle:
                 cv2.circle(img, point_coords, 
-                            radius=self.point_radius, color=self.point_color, thickness=-1)
+                            radius=self.point_radius, color=color, thickness=-1)
             else:
                 row = round((self.img_size-1)*points[i,0])
                 col = round((self.img_size-1)*points[i,1])
@@ -89,7 +103,7 @@ class TSPDataset(torch.utils.data.Dataset):
                 text = f'{i}_({points[i, 1]:.2f}, {points[i, 0]:.2f})'
                 # text = f'({points[i, 1]:.2f}, {points[i, 0]:.2f})'
                 cv2.putText(img, text, (point_coords[0] + 5, point_coords[1] - 5), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, self.point_color, 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, color, 1, cv2.LINE_AA)
         
         # Rasterize box condition
         if box is not None:

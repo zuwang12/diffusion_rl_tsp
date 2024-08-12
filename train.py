@@ -1,6 +1,7 @@
 import json
 import torch
 from torchvision.utils import save_image
+from matplotlib import pyplot as plt
 
 import argparse
 import yaml
@@ -17,7 +18,7 @@ from copy import deepcopy
 
 from model.unet import UNetModel
 from model.TSPModel import Model_x0, TSPDataset
-from utils import TSP_2opt, runlat, save_solved_img
+from utils import TSP_2opt, runlat, calculate_distance_matrix2
 
 import reward_fns
 from pipeline_with_logprob import pipeline_with_logprob
@@ -27,25 +28,54 @@ from diffusers import StableDiffusionPipeline, DDIMScheduler
 def load_config():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_name", type=str, default="tsp", help="which training config to use")
+    parser.add_argument("--start_idx", type=int, default=0, help="start index for iteration")
+    parser.add_argument("--end_idx", type=int, default=1280, help="end index for iteration")
+    parser.add_argument("--num_cities", type=int, default=20, help="number of cities")
+    parser.add_argument("--num_epochs", type=int, default=1, help="number of epoch")
+    parser.add_argument("--num_inner_epochs", type=int, default=1, help="number of inner epoch")
+    parser.add_argument("--num_init_sample", type=int, default=1, help="number of initial sample")
+    parser.add_argument("--run_name", type=str, default='', help="Name for the run")
+    parser.add_argument("--constraint_type", type=str, default='basic')
     args = parser.parse_args()
     # mapping from config name to config path
     config_mapping = {"tsp":  "./configs/train_configs.yaml"}
     with open(config_mapping[args.config_name]) as file:
         config_dict= yaml.safe_load(file)
         config = munchify(config_dict)
+    
+    # Add start_idx, end_idx, and gpu_id to config
+    config.start_idx = args.start_idx
+    config.end_idx = args.end_idx
+    config.num_cities = args.num_cities
+    config.run_name = args.run_name
+    config.num_epochs = args.num_epochs
+    config.num_inner_epochs = args.num_inner_epochs
+    config.num_init_sample = args.num_init_sample
+    config.constraint_type = args.constraint_type
     return config
 
 if __name__=='__main__':
+    date_per_type = {
+       'basic' : '',
+       'box' : '240710',
+       'path' : '240711',
+       'cluster' : '240721', 
+    }
     config = load_config()
     tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
     now = time.strftime('%y%m%d_%H%M%S')
-    config.run_name += f'_{now}'
-    
-    device = ('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    config.file_name = f'tsp{config.num_cities}_test_concorde.txt'
-    config.result_file_name = f'ours_tsp{config.num_cities}_test_epoch{config.num_epochs}_inner{config.num_inner_epochs}_{config.run_name}.csv'
+    if config.run_name==None:
+        config.run_name = f'test_{now}'
+    device = f'cuda' if torch.cuda.is_available() else 'cpu'
+
+    if config.constraint_type == 'basic':
+        config.file_name = f'tsp{config.num_cities}_test_concorde.txt'
+        config.result_file_name = f'ours_tsp{config.num_cities}_{config.constraint_type}_{config.start_idx}_{config.end_idx}.csv'
+    else:
+        config.file_name = f'tsp{config.num_cities}_{config.constraint_type}_constraint_{date_per_type.get(config.constraint_type)}.txt'
+        config.result_file_name = f'ours_tsp{config.num_cities}_{config.constraint_type}_constraint_{config.start_idx}_{config.end_idx}.csv'
     print(json.dumps(config, indent=4))
+    print(f'Result file : ./Results/{config.constraint_type}/{config.run_name}/{config.result_file_name}')
     
     ################## fix seed ####################
     np.random.seed(config.seed)
@@ -61,111 +91,123 @@ if __name__=='__main__':
     
     ################## Set model, diffusion scheduler ##################
     unet = UNetModel(image_size=config.img_size, in_channels=1, out_channels=1, model_channels=64, num_res_blocks=2, channel_mult=(1,2,3,4), attention_resolutions=[16,8], num_heads=4).to(device)
-    unet.load_state_dict(torch.load(f'./ckpt/unet50_64_8.pth'))
+    unet.load_state_dict(torch.load(f'./ckpt/unet50_64_8.pth', map_location=device))
     unet.to(device)
     unet.eval()
     pipeline.unet = unet
     print('Loaded model')
     
     del pipeline.vae, pipeline.text_encoder
-    # pipeline.unet.requires_grad_(False)
     pipeline.safety_checker = None
 
     pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
 
     # Enable TF32 for faster training on Ampere GPUs
-    if config.allow_tf32: # TODO: need to change
+    if config.allow_tf32: 
         torch.backends.cuda.matmul.allow_tf32 = True
     ################## Set model, scheduler ##################
         
     test_dataset = TSPDataset(data_file=f'./data/{config.file_name}',
                               img_size = config.img_size,
+                              constraint_type= config.constraint_type,
                               point_radius = config.point_radius,
                               point_color = config.point_color,
                               point_circle = config.point_circle,
                               line_thickness = config.line_thickness,
-                              line_color = config.line_color)
+                              line_color = config.line_color,
+                              show_position=False)
     test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=config.batch_size_sample, shuffle=False)
     num_points = test_dataset.rasterize(0)[1].shape[0]
     print('Created dataset')
     
-    sample_idxes, solved_costs, init_costs, gt_costs, final_gaps, init_gaps, epochs, inner_epochs = [], [], [], [], [], [], [], []
+    sample_idxes, solved_costs, init_costs, gt_costs, final_gaps, init_gaps, epochs, inner_epochs, basic_costs, penalty_counts = [], [], [], [], [], [], [], [], [], []
 
-    for img, points, gt_tour, sample_idx in tqdm(test_dataloader):
-        if int(sample_idx)!=0:
-            break
-        gt_img = deepcopy(img)
-        gt_img -= gt_img.min()
-        gt_img /= gt_img.max()
-        save_image(gt_img[0,0,:,:], f'{config.path}/gt_img.png')
+    for img, points, gt_tour, sample_idx, constraint in tqdm(test_dataloader):
+        if config.constraint_type == 'basic':
+            constraint = None
+        if not (config.start_idx <= int(sample_idx) < config.end_idx):
+            continue
+
+        ########### prepare constraint ##############
+        if config.constraint_type == 'box':
+            distance_matrix, intersection_matrix = calculate_distance_matrix2(points[0], constraint[0])
+            
         ########### add prior model & prepare image ###########
-        xT = torch.randn_like(img).float().to(device) # used at each problem
-        model = Model_x0( # TODO: From define -> To reinit
+        xT = torch.randn_like(img).float().to(device) 
+        model = Model_x0(
             batch_size = config.batch_size_sample,
             num_points = num_points,
             img_size = config.img_size,
             line_color = config.line_color,
             line_thickness = config.line_thickness,
-            xT = xT).to(device) #TODO: check batch_size from sample vs train
+            xT = xT).to(device)
         model.eval()
 
-        # _, points, gt_tour = test_dataset.rasterize(sample_idx[0].item())
-        points, gt_tour = points.numpy()[0], gt_tour.numpy()[0]
-        solver = TSP_2opt(points)
+        if config.constraint_type == 'basic':
+            points, gt_tour = points.numpy()[0], gt_tour.numpy()[0]
+        else:
+            points, gt_tour, constraint = points.numpy()[0], gt_tour.numpy()[0], constraint.numpy()[0]
+            
+        if config.constraint_type == 'box':
+            constraint = intersection_matrix
+            
+        solver = TSP_2opt(points, constraint_type=config.constraint_type, constraint=constraint)
         gt_cost = solver.evaluate([i-1 for i in gt_tour])
         img_query = torch.zeros_like(img)
         img_query[img == 1] = 1
-        model.compute_edge_images(points=points, img_query=img_query) # Pre-compute edge images
+        model.compute_edge_images(points=points, img_query=img_query) 
         
-        dists = np.zeros_like(model.latent[0].cpu().detach()) # (50, 50)
+        dists = np.zeros_like(model.latent[0].cpu().detach())
         for i in range(dists.shape[0]):
             for j in range(dists.shape[0]):
                 dists[i,j] = np.linalg.norm(points[i]-points[j])
-                
-        ########### add prior model & prepare image ###########
+
+        # if config.constraint_type == 'box':
+        #     gt_img = test_dataset.draw_tour(tour = gt_tour, points = points, box = constraint)
+        # if config.constraint_type == 'path':
+        #     gt_img = test_dataset.draw_tour(tour = gt_tour, points = points, paths = constraint)
+        # if config.constraint_type == 'cluster':
+        #     gt_img = test_dataset.draw_tour(tour = gt_tour, points = points, cluster = constraint)
         
         reward_fn = getattr(reward_fns, config.reward_type)()
         final_solved_cost = 10**10
         final_gap = 0
         
-        # Train!
-        for epoch in range(config.num_epochs):
-            #################### SAMPLING ####################                
+        for epoch in range(config.num_epochs):           
             if epoch == 0:
                 num_sample = config.num_init_sample
             else:
-                num_sample = 1
+                num_sample = 1 # TODO: check this approach
             samples = []
             best_reward = -10**10
             for i in range(num_sample):
                 if epoch == 0:
-                    model.reset() # get various x0 | TODO: model define vs weight init compare!
-                    # _, reward_meta = reward_fn(points, model.latent, dists)
-                    # solved_img = test_dataset.draw_tour(np.array(reward_meta['solved_tour']), points)
-                    # solved_img -= solved_img.min()
-                    # solved_img /= solved_img.max()
-                    # save_image(torch.tensor(solved_img), './solved_img.png')
-                    
+                    model.reset() 
                     if config.use_plug_and_play:
                         runlat(model, unet, STEPS=config.num_steps, batch_size=1, device=device)   
-                # plug&play의 adj로 부터 weighted sum한 x0 image (for sample x0)
-                model.save_image(f'{config.path}/sample_encoding{i}.png')
-                # plug&play의 adj로 부터 생성된 tour를 그린 이미지 (for reward calc)
-                save_solved_img(points, model, dists, reward_fn, test_dataset, path=f'{config.path}/sample_tour{i}.png')
-                _, _, latents, log_probs = pipeline_with_logprob( # image, has_nsfw_concept, all_latents, all_log_probs
+                _, _, latents, log_probs = pipeline_with_logprob(
                     pipeline,
                     num_inference_steps = config.num_steps,
                     eta=config.eta,
-                    output_type="latent", # latent : resolution = image resolution
+                    output_type="latent", 
                     model = model,
                     device = device
                 )
 
-                latents = torch.stack(latents, dim=1)  # (batch_size, num_steps + 1, 4, 64, 64)
-                log_probs = torch.stack(log_probs, dim=1)  # (batch_size, num_steps, 1)
-                timesteps = pipeline.scheduler.timesteps.repeat(config.batch_size_sample, 1)  # (batch_size, num_steps)
-
-                rewards = torch.as_tensor(reward_fn(points, model.latent, dists)[0], device=device)
+                latents = torch.stack(latents, dim=1)  
+                log_probs = torch.stack(log_probs, dim=1)  
+                timesteps = pipeline.scheduler.timesteps.repeat(config.batch_size_sample, 1)
+                
+                if config.constraint_type == 'box':
+                    constraint = intersection_matrix
+                rewards = torch.as_tensor(reward_fn(points, model.latent, dists, config.constraint_type, constraint)[0], device=device)
+                # if config.constraint_type == 'box':
+                #     rewards = torch.as_tensor(reward_fn(points, model.latent, dists, config.constraint_type, constraint)[0], device=device)
+                # elif config.constraint_type == 'path':
+                #     rewards = torch.as_tensor(reward_fn(points, model.latent, dists, path = constraint)[0], device=device)
+                # elif config.constraint_type == 'cluster':
+                #     rewards = torch.as_tensor(reward_fn(points, model.latent, dists, cluster = constraint)[0], device=device)
+                    
                 if config.use_best_sample & (float(rewards)>best_reward):
                     best_reward = float(rewards)
                     model_init = deepcopy(model.state_dict())
@@ -173,8 +215,8 @@ if __name__=='__main__':
                 samples.append(
                     {
                         "timesteps": timesteps,
-                        "latents": latents[:, :-1],  # each entry is the latent before timestep t
-                        "next_latents": latents[:, 1:],  # each entry is the latent after timestep t
+                        "latents": latents[:, :-1],  
+                        "next_latents": latents[:, 1:], 
                         "log_probs": log_probs,
                         "rewards": rewards,
                     }
@@ -184,35 +226,28 @@ if __name__=='__main__':
                     model.load_state_dict(model_init)
                 else:
                     model.reset()
-            # 맨처음 초기단계 img (encoding)
-            model.save_image(f'{config.path}/init_img.png')
 
-            # collate samples into dict where each entry has shape (num_batches_per_epoch * sample.batch_size, ...)
             samples = {k: torch.cat([s[k] for s in samples]) for k in samples[0].keys()}
             
-            # gather rewards across processes
             rewards = (samples["rewards"]).cpu().numpy()
             
             solved_cost = -best_reward
             gap = 100*(solved_cost-gt_cost) / gt_cost
             
-            if epoch == 0: # default setting
+            if epoch == 0:
                 init_cost = solved_cost
                 init_gap = gap
-            ################################## Update records ##################################
-            
+
             if len(rewards)>1:
                 advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
             else:
                 advantages = rewards
 
-            # ungather advantages; we only need to keep the entries corresponding to the samples on this process
             samples["advantages"] = (torch.as_tensor(advantages).reshape(config.num_processes, -1)[config.process_index].to(device))
             del samples["rewards"]
 
             total_batch_size, num_timesteps = samples["timesteps"].shape
             
-            # num_inner_epochs = total_batch_size
             if epoch == 0:
                 num_inner_epochs = config.num_inner_epochs
             else:
@@ -220,7 +255,7 @@ if __name__=='__main__':
             
             optimizer_cls = torch.optim.AdamW
             optimizer = optimizer_cls(
-                model.parameters(), # unet.parameters()
+                model.parameters(),
                 lr =config.learning_rate,
                 betas = (config.adam_beta1, config.adam_beta2),
                 weight_decay = config.adam_weight_decay,
@@ -229,21 +264,16 @@ if __name__=='__main__':
             
             scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1, end_factor=0.1, total_iters=num_inner_epochs)
             
-            ######################################## TRAINING ########################################
             for inner_epoch in range(num_inner_epochs):
-                # shuffle samples along batch dimension
                 perm = torch.randperm(total_batch_size, device=device)
                 samples = {k: v[perm] for k, v in samples.items()}
 
-                # shuffle along time dimension independently for each sample
                 perms = torch.stack([torch.randperm(num_timesteps, device=device) for _ in range(total_batch_size)])
                 for key in ["timesteps", "latents", "next_latents", "log_probs"]:
                     samples[key] = samples[key][torch.arange(total_batch_size, device=device)[:, None], perms, ]
 
-                # rebatch for training
                 samples_batched = {k: v.reshape(-1, config.batch_size_train, *v.shape[1:]) for k, v in samples.items()}
 
-                # dict of lists -> list of dicts for easier iteration
                 samples_batched = [dict(zip(samples_batched, x)) for x in zip(*samples_batched.values())]
 
                 for i, sample in list(enumerate(samples_batched)):
@@ -260,7 +290,6 @@ if __name__=='__main__':
                             prev_sample=sample["next_latents"][:, j],
                         )
 
-                        # ppo logic
                         advantages = torch.clamp(sample["advantages"], -config.adv_clip_max, config.adv_clip_max,)
                         ratio = torch.exp(log_prob - sample["log_probs"][:, j])
                         unclipped_loss = -advantages * ratio
@@ -270,24 +299,18 @@ if __name__=='__main__':
                         optimizer.zero_grad()
                         loss.backward()
                         optimizer.step()
-                        # encoding image
-                        model.save_image(f'{config.path}/encoding_epoch{epoch}_inner_epoch{inner_epoch}_sample{i}_timesteps{j}.png')
-                        # tour image
-                        save_solved_img(points, model, dists, reward_fn, test_dataset, path=f'{config.path}/tour_epoch{epoch}_inner_epoch{inner_epoch}_sample{i}_timesteps{j}.png')
-                    ############# save best result ##############
-                    solved_cost = reward_fn(points, model.latent, dists)[1]['solved_cost']
+                        
+                    output = reward_fn(points, model.latent, dists, config.constraint_type, constraint = constraint)[1]
+                    solved_cost, solved_tour, basic_cost, penalty_count = output['solved_cost'], output['solved_tour'], output['basic_cost'], output['penalty_count']
                     gap = 100*(solved_cost-gt_cost) / gt_cost
-                    # print(f'sample index : {int(sample_idx)}, {i}.{inner_epoch}-iter, solved cost : {solved_cost}, gt cost : {gt_cost}')  
                     if solved_cost<final_solved_cost:
                         best_epoch = epoch
                         best_inner_epoch = inner_epoch
                         final_solved_cost = solved_cost
                         final_gap = gap
-                    ############# save best result ##############
-                
-                # if epoch == 0:   
-                #     scheduler.step()
-        ################################## append Result at each sample index ##################################
+                        final_basic_cost = basic_cost
+                        final_penalty_count = penalty_count
+        # test_dataset.draw_tour(solved_tour, points,)    
         sample_idxes.append(int(sample_idx))
         solved_costs.append(final_solved_cost)
         init_costs.append(init_cost)
@@ -296,6 +319,8 @@ if __name__=='__main__':
         init_gaps.append(init_gap)
         epochs.append(best_epoch)
         inner_epochs.append(best_inner_epoch)
+        basic_costs.append(final_basic_cost)
+        penalty_counts.append(final_penalty_count)
         
         del loss
         gc.collect()
@@ -309,14 +334,16 @@ if __name__=='__main__':
                 'solved_cost' : solved_costs,
                 'init_cost' : init_costs,
                 'gt_cost' : gt_costs,
+                'basic_cost' : basic_costs,
+                'penalty_count' : penalty_counts,
                 'final_gap(%)' : final_gaps,
                 'init_gap(%)' : init_gaps,
             })
             if config.save_result:
-                if not os.path.exists(f'./Results/{config.run_name}'):
-                    os.makedirs(f'./Results/{config.run_name}')
-                result_df.to_csv(f'./Results/{config.run_name}/{config.result_file_name}', index=False)
-                
+                if not os.path.exists(f'./Results/{config.constraint_type}/{config.run_name}'):
+                    os.makedirs(f'./Results/{config.constraint_type}/{config.run_name}')
+                result_df.to_csv(f'./Results/{config.constraint_type}/{config.run_name}/{config.result_file_name}', index=False)
+
     else:        
         result_df = pd.DataFrame({
             'sample_idx' : sample_idxes,
@@ -325,10 +352,13 @@ if __name__=='__main__':
             'solved_cost' : solved_costs,
             'init_cost' : init_costs,
             'gt_cost' : gt_costs,
+            'basic_cost' : basic_costs,
+            'penalty_count' : penalty_counts,
             'final_gap(%)' : final_gaps,
             'init_gap(%)' : init_gaps,
         })
         if config.save_result:
-            if not os.path.exists(f'./Results/{config.run_name}'):
-                os.makedirs(f'./Results/{config.run_name}')
-            result_df.to_csv(f'./Results/{config.run_name}/{config.result_file_name}', index=False)
+            print('save result')
+            if not os.path.exists(f'./Results/{config.constraint_type}/{config.run_name}'):
+                os.makedirs(f'./Results/{config.constraint_type}/{config.run_name}')
+            result_df.to_csv(f'./Results/{config.constraint_type}/{config.run_name}/{config.result_file_name}', index=False)

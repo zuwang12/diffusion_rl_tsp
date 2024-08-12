@@ -41,7 +41,7 @@ class TSPDataset(torch.utils.data.Dataset):
         tour = tour.split(' ')
         tour = np.array([int(t) for t in tour])
         
-        if self.constraint_type==None:
+        if self.constraint_type=='basic':
             constraint = None
             img = self.draw_tour(tour=tour, points=points)
             
@@ -139,7 +139,10 @@ class TSPDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         img, points, tour, constraint = self.rasterize(idx)
-        return img[np.newaxis,:,:], points, tour, idx, constraint
+        if self.constraint_type == 'basic':
+            return img[np.newaxis,:,:], points, tour, idx, torch.tensor(0)
+        else:
+            return img[np.newaxis,:,:], points, tour, idx, constraint
             
 
 class Model_x0(nn.Module):

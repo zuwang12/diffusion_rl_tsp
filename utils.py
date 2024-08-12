@@ -115,7 +115,7 @@ class TSP_2opt():
                     new_route[i:j] = route[j-1:i-1:-1] # this is the 2optSwap
                     new_constraints = self.count_constraints(new_route)
 
-                    if (self.evaluate(new_route) < self.evaluate(best)) or (new_constraints < best_constraints):
+                    if (self.evaluate(new_route) < self.evaluate(best)) and (new_constraints <= best_constraints):
                         if self.constraint_type != 'box' or self.is_valid_route(new_route):
                             best = new_route
                             improved = True

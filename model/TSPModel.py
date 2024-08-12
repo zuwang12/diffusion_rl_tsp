@@ -7,7 +7,7 @@ from copy import deepcopy
 import random
 
 class TSPDataset(torch.utils.data.Dataset):
-    def __init__(self, data_file, img_size, constraint_type=None, show_position=False, point_radius=1, point_color=1, point_circle=True, line_thickness=2, line_color=0.5, box_color=0.75, max_points=100):
+    def __init__(self, data_file, img_size, constraint_type='basic', show_position=False, point_radius=1, point_color=1, point_circle=True, line_thickness=2, line_color=0.5, box_color=0.75, max_points=100):
         self.data_file = data_file
         self.img_size = img_size
         self.point_radius = point_radius

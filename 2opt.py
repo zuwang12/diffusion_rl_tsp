@@ -15,6 +15,9 @@ def main():
     parser.add_argument("--constraint_type", type=str, default='basic')
     parser.add_argument("--save_freq", type=int, default=2)
     parser.add_argument("--run_name", type=str, default='2opt_test')
+    # 추가: sample_idx 범위 설정을 위한 인자 추가
+    parser.add_argument("--start_idx", type=int, default=0)
+    parser.add_argument("--end_idx", type=int, default=1280)
     args = parser.parse_args()
     # Set constants for drawing and loading the dataset
     date_per_type = {
@@ -40,7 +43,9 @@ def main():
     root_path = '/mnt/home/zuwang/workspace/diffusion_rl_tsp'
     data_path = os.path.join(root_path, 'data')
     input_path = os.path.join(data_path, FILE_NAME)
-    output_path = os.path.join(root_path, f'Results/{args.constraint_type}/{args.run_name}.csv')
+    output_dir = os.path.join(root_path, f'Results/{args.constraint_type}/tsp{args.num_cities}_2opt_{now}')
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f'{args.run_name}.csv')
     
     # Create an instance of the TSPDataset
     test_dataset = TSPDataset(
@@ -57,9 +62,11 @@ def main():
 
     test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-    solved_costs, penalty_counts, sample_idxes, gt_costs = [], [], [], []
+    basic_costs, penalty_counts, sample_idxes, gt_costs = [], [], [], []
     costs = 0
     for img, points, gt_tour, sample_idx, constraint in tqdm(test_dataloader):
+        if not (args.start_idx <= int(sample_idx) < args.end_idx):
+            continue
         img, points, gt_tour, sample_idx, constraint = (tensor.squeeze(0) for tensor in (img, points, gt_tour, sample_idx, constraint))
         # if int(sample_idx)>5:break
         if args.constraint_type=='box':
@@ -69,28 +76,28 @@ def main():
         tour = list(range(len(gt_tour)-1))
         tour.append(0)
         solved_tour, _ = tsp_solver.solve_2opt(tour)
-        solved_cost = tsp_solver.evaluate(solved_tour)
+        basic_cost = tsp_solver.evaluate(solved_tour)
         gt_cost = tsp_solver.evaluate([x-1 for x in gt_tour])
         # Calculate the penalty for constraints
         penalty_const = 10  # Define a penalty constant
         penalty_count = tsp_solver.count_constraints(solved_tour)  # Count the number of constraint violations
         # penalty = penalty_count * penalty_const  # Calculate the penalty
-        # total_cost = solved_cost + penalty
+        # total_cost = basic_cost + penalty
         # costs += total_cost
-        solved_costs.append(solved_cost)
+        basic_costs.append(basic_cost)
         penalty_counts.append(penalty_count)
         sample_idxes.append(int(sample_idx))
         gt_costs.append(gt_cost)
         if int(sample_idx)%args.save_freq == 0:
             result = pd.DataFrame({'sample_idx' : sample_idxes,
                                    'penalty_count' : penalty_counts,
-                                   'solved_cost' : solved_costs,
+                                   'basic_cost' : basic_costs,
                                    'gt_cost' : gt_costs,})
             result.to_csv(output_path, encoding='cp949', index=False)
     else:
         result = pd.DataFrame({'sample_idx' : sample_idxes,
                             'penalty_count' : penalty_counts,
-                            'solved_cost' : solved_costs,
+                            'basic_cost' : basic_costs,
                             'gt_cost' : gt_costs,})
         result.to_csv(output_path, encoding='cp949', index=False)
 

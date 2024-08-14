@@ -85,7 +85,7 @@ class TSP_2opt():
                 return False
         return True
 
-    def solve_2opt(self, route):
+    def solve_2opt(self, route, max_iter=10000):
         assert route[0] == route[-1], 'Tour is not a cycle'
 
         best = route
@@ -93,6 +93,7 @@ class TSP_2opt():
         improved = True
         steps = 0
         while improved:
+            if steps == max_iter:break
             improved = False
             for i in range(1, len(route)-2):
                 ############## path #############

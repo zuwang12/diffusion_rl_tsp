@@ -75,7 +75,7 @@ def main():
         tsp_solver = TSP_2opt(points, constraint_type=args.constraint_type, constraint = constraint)
         tour = list(range(len(gt_tour)-1))
         tour.append(0)
-        solved_tour, _ = tsp_solver.solve_2opt(tour)
+        solved_tour, _ = tsp_solver.solve_2opt(tour, max_iter = 10)
         basic_cost = tsp_solver.evaluate(solved_tour)
         gt_cost = tsp_solver.evaluate([x-1 for x in gt_tour])
         # Calculate the penalty for constraints

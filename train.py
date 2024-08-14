@@ -91,7 +91,8 @@ if __name__=='__main__':
     
     ################## Set model, diffusion scheduler ##################
     unet = UNetModel(image_size=config.img_size, in_channels=1, out_channels=1, model_channels=64, num_res_blocks=2, channel_mult=(1,2,3,4), attention_resolutions=[16,8], num_heads=4).to(device)
-    unet.load_state_dict(torch.load(f'./ckpt/unet50_64_8.pth', map_location=device))
+    if config.use_prior:
+        unet.load_state_dict(torch.load(f'./ckpt/unet50_64_8.pth', map_location=device))
     unet.to(device)
     unet.eval()
     pipeline.unet = unet

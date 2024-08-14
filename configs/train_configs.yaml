@@ -12,7 +12,8 @@ save_freq : 2
 num_cities : 50
 run_name : 'tsp20_constraint'
 use_plug_and_play : True
-constraint_type : 'cluster'
+use_prior : True
+constraint_type : 'path'
 
 # sample
 num_steps : 50

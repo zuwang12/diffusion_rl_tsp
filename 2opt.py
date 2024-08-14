@@ -38,12 +38,12 @@ def main():
         FILE_NAME = F'tsp{args.num_cities}_{args.constraint_type}_constraint_{date_per_type[args.constraint_type]}.txt'
     SAVE_IMAGE = False
     BATCH_SIZE_SAMPLE = 1
-    now = time.strftime('%y%m%d_%H%M%S')
+    # now = time.strftime('%y%m%d_%H%M%S')
     
     root_path = '/mnt/home/zuwang/workspace/diffusion_rl_tsp'
     data_path = os.path.join(root_path, 'data')
     input_path = os.path.join(data_path, FILE_NAME)
-    output_dir = os.path.join(root_path, f'Results/{args.constraint_type}/tsp{args.num_cities}_2opt_{now}')
+    output_dir = os.path.join(root_path, f'Results/{args.constraint_type}/{args.run_name}')
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, f'{args.run_name}.csv')
     

@@ -70,6 +70,8 @@ class TSP_2opt():
                 a, b = path_pair
                 segment1 = (self.points[a], self.points[b])
                 for j in range(len(route) - 1):
+                    if bool(set([a, b]) & set([route[j], route[j+1]])):
+                        continue
                     segment2 = (self.points[route[j]], self.points[route[j + 1]])
                     if do_lines_intersect(segment1[0], segment1[1], segment2[0], segment2[1]):
                         count += 1

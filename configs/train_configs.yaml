@@ -25,8 +25,8 @@ use_best_sample : False
 # train
 timestep_fraction : 1.0
 gradient_accumulation_steps : 1
-num_epochs : 1
-num_inner_epochs : 1
+num_epochs : 3
+num_inner_epochs : 5
 
 learning_rate : 0.1 #3e-4
 adam_beta1 : 0.9

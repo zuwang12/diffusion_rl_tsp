@@ -13,6 +13,7 @@ from model.diffusion import GaussianDiffusion
 
 from scipy.spatial import ConvexHull
 from matplotlib.path import Path
+from PIL import Image
 
 seed_value = 2024
 
@@ -68,9 +69,12 @@ class TSP_2opt():
         if self.constraint_type == 'path':
             for path_pair in self.path_pairs:
                 a, b = path_pair
+                if not check_consecutive_pair(route, a, b):
+                    count += 1
                 segment1 = (self.points[a], self.points[b])
                 for j in range(len(route) - 1):
                     if bool(set([a, b]) & set([route[j], route[j+1]])):
+                    # if len(set([a, b]).intersection(set([route[j], route[j+1]])))!=0:
                         continue
                     segment2 = (self.points[route[j]], self.points[route[j + 1]])
                     if do_lines_intersect(segment1[0], segment1[1], segment2[0], segment2[1]):
@@ -87,7 +91,7 @@ class TSP_2opt():
                 return False
         return True
 
-    def solve_2opt(self, route, max_iter=10000):
+    def solve_2opt(self, route, max_iter = None):
         assert route[0] == route[-1], 'Tour is not a cycle'
 
         best = route
@@ -95,7 +99,10 @@ class TSP_2opt():
         improved = True
         steps = 0
         while improved:
-            if steps == max_iter:break
+            steps+=1
+            if max_iter != None:
+                if steps == max_iter:
+                    break
             improved = False
             for i in range(1, len(route)-2):
                 ############## path #############
@@ -122,7 +129,7 @@ class TSP_2opt():
                         if self.constraint_type != 'box' or self.is_valid_route(new_route):
                             best = new_route
                             improved = True
-                            steps += 1
+                            # steps += 1
                             if new_constraints < best_constraints:
                                 best_constraints = new_constraints
                     
@@ -136,6 +143,37 @@ class TSP_2opt():
             if self.evaluate(result) < self.evaluate(best):
                 best = result
         return best
+    
+    def make_consecutive(self, lst, a, b):
+        try:
+            # a와 b의 인덱스를 찾음
+            idx_a = lst.index(a)
+            idx_b = lst.index(b)
+            
+            # a와 b가 이미 연속된 경우
+            if abs(idx_a - idx_b) == 1:
+                return lst  # 이미 연속되어 있으므로 변경할 필요 없음
+
+            # a와 b가 연속되지 않은 경우
+            if idx_a < idx_b:
+                # a가 b보다 앞에 있는 경우
+                lst.pop(idx_b)  # b를 리스트에서 제거
+                lst.insert(idx_a + 1, b)  # a 바로 뒤에 b를 삽입
+            else:
+                # b가 a보다 앞에 있는 경우
+                lst.pop(idx_a)  # a를 리스트에서 제거
+                lst.insert(idx_b + 1, a)  # b 바로 뒤에 a를 삽입
+
+        except ValueError as e:
+            print(f"Error: {e}. One of the elements is not in the list.")
+
+        return lst
+    
+def check_consecutive_pair(lst, a, b):
+    for i in range(len(lst) - 1):
+        if (lst[i] == a and lst[i + 1] == b) or (lst[i] == b and lst[i + 1] == a):
+            return True
+    return False
     
 def runlat(model, unet, STEPS, batch_size, device):
     opt = torch.optim.Adam(model.parameters(), lr=1, betas=(0, 0.9))
@@ -831,3 +869,36 @@ def check_edge_intersection(new_edge, existing_edges, points):
         if do_intersect(p1, q1, p2, q2):
             return True
     return False
+
+def save_figure(img, path):
+
+    img -= img.min()
+    img /= img.max()
+    
+    # Initialize an empty (64, 64, 3) array for the RGB image
+    image_array = np.zeros((64, 64, 3), dtype=np.uint8)
+
+    # Define the colors for interpolation
+    white = np.array([255, 255, 255])   # Color for 0
+    black = np.array([0, 0, 0])         # Color for 0.5
+    green = np.array([0, 255, 0])       # Color for 1
+
+    # Interpolate colors based on the value in `img`
+    for i in range(img.shape[0]):
+        for j in range(img.shape[1]):
+            value = img[i, j]
+            if value <= 0.5:
+                # Interpolate between white and black
+                color = white * (0.5 - value) / 0.5 + black * value / 0.5
+            else:
+                # Interpolate between black and green
+                color = black * (1.0 - value) / 0.5 + green * (value - 0.5) / 0.5
+            
+            image_array[i, j] = color
+
+    # Convert the array back to an image
+    image = Image.fromarray(image_array)
+
+    # Save or display the image
+    image.save(path)
+    # image.show()

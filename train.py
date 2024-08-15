@@ -18,7 +18,7 @@ from copy import deepcopy
 
 from model.unet import UNetModel
 from model.TSPModel import Model_x0, TSPDataset
-from utils import TSP_2opt, runlat, calculate_distance_matrix2
+from utils import TSP_2opt, runlat, calculate_distance_matrix2, save_figure
 
 import reward_fns
 from pipeline_with_logprob import pipeline_with_logprob
@@ -31,10 +31,10 @@ def load_config():
     parser.add_argument("--start_idx", type=int, default=0, help="start index for iteration")
     parser.add_argument("--end_idx", type=int, default=1280, help="end index for iteration")
     parser.add_argument("--num_cities", type=int, default=20, help="number of cities")
-    parser.add_argument("--num_epochs", type=int, default=1, help="number of epoch")
-    parser.add_argument("--num_inner_epochs", type=int, default=1, help="number of inner epoch")
-    parser.add_argument("--num_init_sample", type=int, default=1, help="number of initial sample")
-    parser.add_argument("--run_name", type=str, default='', help="Name for the run")
+    parser.add_argument("--num_epochs", type=int, default=3, help="number of epoch")
+    parser.add_argument("--num_inner_epochs", type=int, default=3, help="number of inner epoch")
+    parser.add_argument("--num_init_sample", type=int, default=3, help="number of initial sample")
+    parser.add_argument("--run_name", type=str, default='tsp_test', help="Name for the run")
     parser.add_argument("--constraint_type", type=str, default='basic')
     args = parser.parse_args()
     # mapping from config name to config path
@@ -124,6 +124,7 @@ if __name__=='__main__':
     sample_idxes, solved_costs, init_costs, gt_costs, final_gaps, init_gaps, epochs, inner_epochs, basic_costs, penalty_counts = [], [], [], [], [], [], [], [], [], []
 
     for img, points, gt_tour, sample_idx, constraint in tqdm(test_dataloader):
+        # if int(sample_idx)!= 160:continue
         if config.constraint_type == 'basic':
             constraint = None
         if not (config.start_idx <= int(sample_idx) < config.end_idx):
@@ -264,8 +265,12 @@ if __name__=='__main__':
             )    
             
             scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1, end_factor=0.1, total_iters=num_inner_epochs)
-            
+            # if epoch == 0:
+            #     for i in [0, 10, 20, 30, 40, 49]:
+            #         save_figure(img = samples['latents'][0,i,0,:,:].detach().cpu().numpy(), path = f'./images/encoding/xt_idx{int(sample_idx)}_timestep{i}.png')
             for inner_epoch in range(num_inner_epochs):
+                # save_figure(img = model.encode()[0,0,:,:].detach().cpu().numpy(), path = f'./images/encoding/encoding_idx{int(sample_idx)}_epoch{epoch}_inner{inner_epoch}.png')
+                
                 perm = torch.randperm(total_batch_size, device=device)
                 samples = {k: v[perm] for k, v in samples.items()}
 
@@ -311,7 +316,9 @@ if __name__=='__main__':
                         final_gap = gap
                         final_basic_cost = basic_cost
                         final_penalty_count = penalty_count
-        # test_dataset.draw_tour(solved_tour, points,)    
+                # tour_image = test_dataset.draw_tour(solved_tour, points)
+                # save_figure(img = tour_image, path = f'./images/encoding/tour_idx{int(sample_idx)}_epoch{epoch}_inner{inner_epoch}.png')
+
         sample_idxes.append(int(sample_idx))
         solved_costs.append(final_solved_cost)
         init_costs.append(init_cost)

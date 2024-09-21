@@ -25,8 +25,9 @@ def load_config():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_name", type=str, default="tsp", help="which training config to use")
     parser.add_argument("--start_idx", type=int, default=0, help="start index for iteration")
-    parser.add_argument("--end_idx", type=int, default=1, help="end index for iteration")
-    parser.add_argument("--num_cities", type=int, default=20, help="number of cities")
+    parser.add_argument("--end_idx", type=int, default=1280, help="end index for iteration")
+    parser.add_argument("--num_cities", type=int, default=200, help="number of cities")
+    parser.add_argument("--max_iter", type=int, default=5, help="max iteration of 2opt at N=200")
     parser.add_argument("--num_epochs", type=int, default=1, help="number of epoch")
     parser.add_argument("--num_inner_epochs", type=int, default=1, help="number of inner epoch")
     parser.add_argument("--num_init_sample", type=int, default=1, help="number of initial sample")
@@ -41,6 +42,7 @@ def load_config():
     config.start_idx = args.start_idx
     config.end_idx = args.end_idx
     config.num_cities = args.num_cities
+    config.max_iter = args.max_iter
     config.run_name = args.run_name
     config.num_epochs = args.num_epochs
     config.num_inner_epochs = args.num_inner_epochs
@@ -205,7 +207,7 @@ def main():
                 if config.constraint_type == 'box':
                     constraint = intersection_matrix
                 rewards = torch.as_tensor(
-                    reward_fn(points, model.latent, dists, config.constraint_type, constraint)[0],
+                    reward_fn(points, model.latent, dists, config.constraint_type, constraint, config.max_iter)[0],
                     device=device
                 )
 
@@ -271,7 +273,7 @@ def main():
                         loss.backward()
                         # accelerator.backward(loss)
                         optimizer.step()
-                    output = reward_fn(points, model.latent, dists, config.constraint_type, constraint=constraint)[1]
+                    output = reward_fn(points, model.latent, dists, config.constraint_type, constraint=constraint, max_iter = config.max_iter)[1]
 
                     solved_tour, basic_cost, penalty_count = output['solved_tour'], output['basic_cost'], output['penalty_count']
                     solved_cost = basic_cost + config.penalty_const * penalty_count 

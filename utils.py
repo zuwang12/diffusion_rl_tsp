@@ -109,45 +109,31 @@ def check_consecutive_pair(lst, a, b):
             return True
     return False
 
-def runlat(model, unet, STEPS, batch_size, device, use_fp16=True):
-    """
-    Function to initialize parameters without using accelerator.
-    """
-    # Initialize optimizer and scheduler (no accelerator involved)
-    opt = torch.optim.Adam(model.parameters(), lr=0.001, betas=(0, 0.9))
+def runlat(model, unet, STEPS, batch_size, device):
+    opt = torch.optim.Adam(model.parameters(), lr=1, betas=(0, 0.9))
     scheduler = torch.optim.lr_scheduler.LinearLR(opt, start_factor=1, end_factor=0.1, total_iters=1000)
     diffusion = GaussianDiffusion(T=1000, schedule='linear')
-
-    # Initialize GradScaler for mixed precision
-    scaler = torch.cuda.amp.GradScaler()
+    # model.latent.data=temp
 
     steps = STEPS
     for i in range(steps):
-        t = ((steps - i) + (steps - i) // 3 * math.cos(i / 50)) / steps * diffusion.T
+        t = ((steps-i) + (steps-i)//3*math.cos(i/50))/steps*diffusion.T # Linearly decreasing + cosine
+
         t = np.clip(t, 1, diffusion.T)
         t = np.array([t for _ in range(batch_size)]).astype(int)
 
-        # Encode and sample from the diffusion model
-        xt, epsilon = diffusion.sample(model.encode(), t)
-        t = torch.from_numpy(t).float().view(batch_size).to(device)
+        # Denoise
+        xt, epsilon = diffusion.sample(model.encode(), t) # get x_{ti} in Algorithm1 - (3 ~ 4)
+        t = torch.from_numpy(t).float().view(batch_size)
+        epsilon_pred = unet(xt.float(), t.to(device))
 
-        # Use torch.cuda.amp's autocast for mixed precision
-        with torch.cuda.amp.autocast():
-            xt = xt.to(device, dtype=torch.float32)
-            epsilon = epsilon.to(device, dtype=torch.float32)
+        loss = F.mse_loss(epsilon_pred, epsilon)
 
-            # Denoise step
-            epsilon_pred = unet(xt, t, use_fp16=use_fp16)
-            loss = F.mse_loss(epsilon_pred, epsilon)
-
-        # Use scaler for mixed precision
-        scaler.scale(loss).backward()
-        scaler.step(opt)
-        scaler.update()
+        loss.backward()
+        opt.step()
         opt.zero_grad()
         scheduler.step()
-
-    # Clean up memory
+    
     gc.collect()
     torch.cuda.empty_cache()
 

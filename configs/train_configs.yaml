@@ -8,12 +8,12 @@ model : "runwayml/stable-diffusion-v1-5"
 revision : "main"
 num_processes : 1
 process_index : 0
-save_result : False
+save_result : True
 save_freq : 2
 num_cities : 20
 run_name : 'tsp20_constraint'
-use_plug_and_play : False
-use_prior : False
+use_plug_and_play : True
+use_prior : True
 constraint_type : 'path'
 penalty_const : 1
 

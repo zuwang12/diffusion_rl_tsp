@@ -9,7 +9,7 @@ def tsp_constraint():
         cost_matrix -= torch.logsumexp(cost_matrix, dim=-1, keepdim=True)
         return torch.exp(cost_matrix)
 
-    def _fn(points, model_latent, dists, constraint_type=None, constraint=None):
+    def _fn(points, model_latent, dists, constraint_type=None, constraint=None, max_iter=2):
         adj_mat = normalize(model_latent).detach().cpu().numpy()[0]
         adj_mat += adj_mat.T
 
@@ -76,9 +76,11 @@ def tsp_constraint():
             real_adj_mat[components[0, 1], components[0, 0]] = 1
         real_adj_mat += real_adj_mat.T
 
+        if num_cities != 200:
+            max_iter = None
         tour = construct_tsp_from_mst(adj_mat, real_adj_mat, dists, points, constraint_type, constraint)
         tsp_solver = TSP_2opt(points, constraint_type, constraint)
-        solved_tour, _ = tsp_solver.solve_2opt(tour)
+        solved_tour, _ = tsp_solver.solve_2opt(tour, max_iter)
 
         # def has_duplicates(l):
         #     existing = []

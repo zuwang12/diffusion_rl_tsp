@@ -33,11 +33,9 @@ def pipeline_with_logprob(
     timesteps = self.scheduler.timesteps
     
     # 2. Prepare latent variables
-    # latents = model.encode(sampling=True) # get x0
-    # latents = torch.randn_like(model.encode())
     latents = model.xT
     batch_size = latents.shape[0]
-        
+
     # 3. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
     extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
     
@@ -45,10 +43,10 @@ def pipeline_with_logprob(
     num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
     all_latents = [latents]
     all_log_probs = []
-    # with self.progress_bar(total=num_inference_steps) as progress_bar:
+
     for i, t in enumerate(timesteps):
         # expand the latents if we are doing classifier free guidance
-        latent_model_input = (latents)
+        latent_model_input = latents
         latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
         
         # predict the noise residual
@@ -70,20 +68,19 @@ def pipeline_with_logprob(
         if i == len(timesteps) - 1 or (
             (i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0
         ):
-            # progress_bar.update()
             if callback is not None and i % callback_steps == 0:
                 callback(i, t, latents)
 
     image = latents
-    has_nsfw_concept = None #TODO: check the meaning of nsfw
+    has_nsfw_concept = None  # TODO: check the meaning of nsfw
 
     if has_nsfw_concept is None:
         do_denormalize = [True] * image.shape[0]
     else:
         do_denormalize = [not has_nsfw for has_nsfw in has_nsfw_concept]
 
-    image = self.image_processor.postprocess( # return image if output_type == "latent"
-        image, output_type=output_type, do_denormalize=do_denormalize # TODO: check meaning of denormalize
+    image = self.image_processor.postprocess(
+        image, output_type=output_type, do_denormalize=do_denormalize
     )
 
     # Offload last model to CPU

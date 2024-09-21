@@ -28,37 +28,31 @@ class TSPDataset(torch.utils.data.Dataset):
     
     def rasterize(self, idx):
         # Select sample
-        line = self.file_lines[idx]
-        # Clear leading/trailing characters
-        line = line.strip()
+        line = self.file_lines[idx].strip()
 
         # Extract points
-        points = line.split(' output ')[0]
-        points = points.split(' ')
-        points = np.array([[float(points[i]), float(points[i+1])] for i in range(0,len(points),2)])
+        points = line.split(' output ')[0].split(' ')
+        points = np.array([[float(points[i]), float(points[i+1])] for i in range(0, len(points), 2)])
+        
         # Extract tour
-        tour = line.split(' output ')[1]
-        tour = tour.split(' ')
+        tour = line.split(' output ')[1].split(' ')
         tour = np.array([int(t) for t in tour])
         
-        if self.constraint_type=='basic':
-            constraint = None
-            img = self.draw_tour(tour=tour, points=points)
-            
-        else:
-            # Extract constraint
-            constraint = line.split(' output ')[2]
-            constraint = constraint.split(' ')
+        constraint = None
+        if self.constraint_type != 'basic':
+            # Extract constraint if not basic type
+            constraint = line.split(' output ')[2].split(' ')
             constraint = np.array([float(t) for t in constraint])
-            
-            if self.constraint_type=='box':        
-                img = self.draw_tour(tour=tour, points=points, box=constraint)
-            else:
-                img = self.draw_tour(tour=tour, points=points)
+        
+        # Draw the image based on the constraint type
+        if self.constraint_type == 'box':        
+            img = self.draw_tour(tour=tour, points=points, box=constraint)
+        else:
+            img = self.draw_tour(tour=tour, points=points)
 
         return img, points, tour, constraint
 
-    def draw_tour(self, tour, points, box = None, paths = None, cluster = None):
+    def draw_tour(self, tour, points, box = None, paths = None, cluster = None, show_constraint=False):
         img = np.zeros((self.img_size, self.img_size))
         
         cluster_colors = {
@@ -131,7 +125,12 @@ class TSPDataset(torch.utils.data.Dataset):
                 cv2.line(img, 
                          tuple(((self.img_size - 1) * points[from_idx, ::-1]).astype(int)), 
                          tuple(((self.img_size - 1) * points[to_idx, ::-1]).astype(int)), 
-                         self.box_color, thickness=self.line_thickness)  # Different color for added lines
+                         self.line_color, thickness=self.line_thickness)  # Different color for added lines
+                if show_constraint:
+                    cv2.line(img, 
+                            tuple(((self.img_size - 1) * points[from_idx, ::-1]).astype(int)), 
+                            tuple(((self.img_size - 1) * points[to_idx, ::-1]).astype(int)), 
+                            self.box_color, thickness=self.line_thickness)  # Different color for added lines
 
         # Rescale image to [-1,1]
         img = 2*(img-0.5)
@@ -140,9 +139,9 @@ class TSPDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         img, points, tour, constraint = self.rasterize(idx)
         if self.constraint_type == 'basic':
-            return img[np.newaxis,:,:], points, tour, idx, torch.tensor(0)
+            return img[np.newaxis, :, :], points, tour, idx, 0
         else:
-            return img[np.newaxis,:,:], points, tour, idx, constraint
+            return img[np.newaxis, :, :], points, tour, idx, constraint
             
 
 class Model_x0(nn.Module):

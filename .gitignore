@@ -9,6 +9,7 @@
 *.pt
 *.png
 *.npy
+*.sh
 
 # directory
 __pycache__
@@ -21,3 +22,4 @@ images
 nohup.out
 run.sh
 tsp_problem.tsp
+run_2opt.sh

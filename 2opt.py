@@ -4,6 +4,7 @@ from utils import TSP_2opt
 from tqdm import tqdm
 import pandas as pd
 import time
+import datetime
 import argparse
 import os
 from utils import calculate_distance_matrix2
@@ -11,8 +12,9 @@ from utils import calculate_distance_matrix2
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num_cities", type=int, default=20)
-    parser.add_argument("--constraint_type", type=str, default='basic')
+    parser.add_argument("--num_cities", type=int, default=100)
+    parser.add_argument("--constraint_type", type=str, default='path')
+    parser.add_argument("--max_iter", type=int, default=10)
     parser.add_argument("--save_freq", type=int, default=2)
     parser.add_argument("--run_name", type=str, default='2opt_test')
     # 추가: sample_idx 범위 설정을 위한 인자 추가
@@ -38,14 +40,15 @@ def main():
         FILE_NAME = F'tsp{args.num_cities}_{args.constraint_type}_constraint_{date_per_type[args.constraint_type]}.txt'
     SAVE_IMAGE = False
     BATCH_SIZE_SAMPLE = 1
-    # now = time.strftime('%y%m%d_%H%M%S')
-    
+    # now = datetime.datetime.now().strftime("%F_%T")
+    # args.run_name = f'tsp{args.num_cities}_2opt_max{args.max_iter}_{now}'
     root_path = '/mnt/home/zuwang/workspace/diffusion_rl_tsp'
     data_path = os.path.join(root_path, 'data')
     input_path = os.path.join(data_path, FILE_NAME)
     output_dir = os.path.join(root_path, f'Results/{args.constraint_type}/{args.run_name}')
     os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, f'{args.run_name}.csv')
+    output_path = os.path.join(output_dir, f'from{args.start_idx}_to{args.end_idx}.csv')
+    print('output path : ', output_path)
     
     # Create an instance of the TSPDataset
     test_dataset = TSPDataset(
@@ -75,11 +78,11 @@ def main():
         tsp_solver = TSP_2opt(points, constraint_type=args.constraint_type, constraint = constraint)
         tour = list(range(len(gt_tour)-1))
         tour.append(0)
-        solved_tour, _ = tsp_solver.solve_2opt(tour, max_iter = 100000)
+        solved_tour, _ = tsp_solver.solve_2opt(tour, max_iter = args.max_iter)
         basic_cost = tsp_solver.evaluate(solved_tour)
         gt_cost = tsp_solver.evaluate([x-1 for x in gt_tour])
         # Calculate the penalty for constraints
-        penalty_const = 10  # Define a penalty constant
+        # penalty_const = 10  # Define a penalty constant
         penalty_count = tsp_solver.count_constraints(solved_tour)  # Count the number of constraint violations
         # penalty = penalty_count * penalty_const  # Calculate the penalty
         # total_cost = basic_cost + penalty

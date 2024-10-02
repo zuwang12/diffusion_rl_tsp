@@ -227,7 +227,7 @@ def main():
                 if config.use_best_sample:
                     model.load_state_dict(model_init)
                 else:
-                    model.reset() # TODO: constraint 조건에서는 one of sample로 가는게 좋으려나
+                    model.reset()
 
             samples = {k: torch.cat([s[k] for s in samples]) for k in samples[0].keys()}
             rewards = samples["rewards"].cpu().numpy()
@@ -236,7 +236,7 @@ def main():
             del samples["rewards"]
 
             total_batch_size, num_timesteps = samples["timesteps"].shape
-            num_inner_epochs = config.num_inner_epochs if epoch == 0 else 1 # TODO: epoch > 0이면 이렇게 하는게 맞을지..?
+            num_inner_epochs = config.num_inner_epochs if epoch == 0 else 1
 
             for inner_epoch in range(num_inner_epochs):
                 perm = torch.randperm(total_batch_size, device=device)

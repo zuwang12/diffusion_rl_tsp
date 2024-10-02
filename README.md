@@ -21,12 +21,3 @@ For using the three types of constraint datasets (obstacle, path, cluster), you 
 2. After generation, move the datasets to the `data/` directory.
 
 Additionally, the prior knowledge (pre-trained diffusion model) can be obtained from [this repository](https://github.com/AlexGraikos/diffusion_priors?tab=readme-ov-file). Please ensure that the prior model is correctly integrated within the DDRL framework for optimal performance.
-
-## Code of Ethics and Ethical Considerations
-
-All participants, including authors and reviewers, are expected to adhere to the [ICLR Code of Ethics](https://iclr.cc/public/CodeOfEthics). Please ensure that any ethical issues related to your research, such as those involving human subjects, data privacy, or potential harms, are addressed within your paper and supplementary materials.
-
-## Reproducibility Statement
-
-To ensure the reproducibility of our results, we encourage authors to include a reproducibility statement in their submissions, referencing all key components needed for replication, such as source code, dataset descriptions, and theoretical proofs included in the supplementary materials.
-

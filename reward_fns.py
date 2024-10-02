@@ -62,7 +62,7 @@ def tsp_constraint():
             ccb = sorted(components[cb],key=lambda x:x==b)
             newc = np.array([[cca[0],ccb[0]]]) # [34, 15]
             m,M = min(ca,cb),max(ca,cb) # (15, 34)
-            real_adj_mat[a,b] = 1 # 연결됨
+            real_adj_mat[a,b] = 1
             components = np.concatenate([components[:m],components[m+1:M],components[M+1:],newc],0)
 
             if constraint_type == 'cluster':
@@ -103,13 +103,3 @@ def tsp_constraint():
         }
 
     return _fn
-
-
-if __name__ == "__main__":
-    # Load test data
-    data = np.load("data_20.npz")
-    points = data['points']
-    dists = data['dists']
-    constraint = data['constraint']
-    constraint_type = data['constraint_type'].item()
-    model_latent = torch.load("model_latent_20.pt")

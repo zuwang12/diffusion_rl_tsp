@@ -427,7 +427,7 @@ def generate_random_box(gt_tour, points, width_max = 0.2, height_max = 0.2):
                 return False
         return True
 
-    for _ in range(1000):  # 최대 1000번 시도
+    for _ in range(1000):
         idx = random.choice(range(len(gt_tour)-1))
         p1, p2 = points[gt_tour[idx] - 1], points[gt_tour[idx+1] - 1]
         cx, cy = (p1 + p2) / 2

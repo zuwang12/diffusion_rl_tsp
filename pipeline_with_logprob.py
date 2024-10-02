@@ -1,9 +1,3 @@
-# Copied from https://github.com/huggingface/diffusers/blob/fc6acb6b97e93d58cb22b5fee52d884d77ce84d8/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion.py
-# with the following modifications:
-# - It uses the patched version of `ddim_step_with_logprob` from `ddim_with_logprob.py`. As such, it only supports the
-#   `ddim` scheduler.
-# - It returns all the intermediate latents of the denoising process as well as the log probs of each denoising step.
-
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
@@ -28,35 +22,28 @@ def pipeline_with_logprob(
     device = None,
 ):
 
-    # 1. Prepare timesteps
     self.scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = self.scheduler.timesteps
     
-    # 2. Prepare latent variables
     latents = model.xT
     batch_size = latents.shape[0]
 
-    # 3. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
     extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
     
-    # 4. Denoising loop
     num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
     all_latents = [latents]
     all_log_probs = []
 
     for i, t in enumerate(timesteps):
-        # expand the latents if we are doing classifier free guidance
         latent_model_input = latents
         latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
         
-        # predict the noise residual
         t = t.float().view(batch_size)
         noise_pred = self.unet(
             latent_model_input,
             t,
         )
         
-        # compute the previous noisy sample x_t -> x_t-1
         latents, log_prob = ddim_step_with_logprob(
             self.scheduler, noise_pred, t, latents, model, **extra_step_kwargs
         )
@@ -64,7 +51,6 @@ def pipeline_with_logprob(
         all_latents.append(latents)
         all_log_probs.append(log_prob)
 
-        # call the callback, if provided
         if i == len(timesteps) - 1 or (
             (i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0
         ):
@@ -72,7 +58,7 @@ def pipeline_with_logprob(
                 callback(i, t, latents)
 
     image = latents
-    has_nsfw_concept = None  # TODO: check the meaning of nsfw
+    has_nsfw_concept = None
 
     if has_nsfw_concept is None:
         do_denormalize = [True] * image.shape[0]
@@ -83,7 +69,6 @@ def pipeline_with_logprob(
         image, output_type=output_type, do_denormalize=do_denormalize
     )
 
-    # Offload last model to CPU
     if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
         self.final_offload_hook.offload()
 

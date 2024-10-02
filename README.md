@@ -20,4 +20,4 @@ For using the three types of constraint datasets (obstacle, path, cluster), you 
 1. Use the provided scripts in `data/make_dataset_box.py`, `data/make_dataset_path.py`, and `data/make_dataset_cluster.py` to create the corresponding datasets.
 2. After generation, move the datasets to the `data/` directory.
 
-Additionally, the prior knowledge (pre-trained diffusion model) can be obtained from [this repository](https://github.com/AlexGraikos/diffusion_priors?tab=readme-ov-file). Please ensure that the prior model is correctly integrated within the DDRL framework for optimal performance.
+Additionally, the prior knowledge (pre-trained diffusion model) can be obtained from [this repository](https://github.com/AlexGraikos/diffusion_priors?tab=readme-ov-file). Please ensure that the prior model, specifically the `unet50_64_8.pth` file, is moved to the `cpkt/` directory within the project and correctly integrated into the DDRL framework for optimal performance.

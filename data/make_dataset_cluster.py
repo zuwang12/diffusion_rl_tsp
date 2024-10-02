@@ -52,13 +52,13 @@ def main():
         point_circle=point_circle, 
         line_thickness=line_thickness, 
         line_color=line_color, 
-        return_box=False, 
-        show_position=False
+        show_position=False,
+        constraint_type='basic',
     )
 
     test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
     with open(txt_path, 'w') as f:
-        for img, points, gt_tour, sample_idx in tqdm(test_dataloader):
+        for img, points, gt_tour, sample_idx, _ in tqdm(test_dataloader):
             k = int(sample_idx[0]) % 4 + 3  # 3,4,5,6,3,4,5,6,...
             kmeans = KMeans(n_clusters=k, random_state=0).fit(points[0])
             labels = kmeans.labels_

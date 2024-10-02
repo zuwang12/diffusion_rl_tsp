@@ -18,7 +18,7 @@ def solve_tsp_instance(i, points, gt_tour, problem_path):
     if not optimal_box:
         return None
 
-    distance_matrix = calculate_distance_matrix(points, optimal_box)
+    distance_matrix = calculate_distance_matrix(points, box=optimal_box)
     write_tsplib_file(distance_matrix, problem_path)
 
     solver = TSPSolver.from_tspfile(problem_path)
@@ -78,7 +78,7 @@ if __name__ == '__main__':
         point_circle=point_circle, 
         line_thickness=line_thickness, 
         line_color=line_color, 
-        constraint_type=None,
+        constraint_type='basic',
         show_position=False
     )
 

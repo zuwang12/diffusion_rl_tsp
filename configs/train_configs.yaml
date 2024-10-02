@@ -22,7 +22,7 @@ num_steps : 50
 batch_size_sample : 1
 num_init_sample : 3
 eta : 1.0 #TODO: check this randomness
-use_best_sample : False
+use_best_sample : True
 
 # train
 timestep_fraction : 1.0

@@ -18,15 +18,6 @@ def save_tour_image(tour, points, edges, input_path, dataset):
     plt.close()
     
 if __name__=='__main__':
-    # 특정 경로 추가
-    path_to_add = '/mnt/home/zuwang/workspace/diffusion_rl_tsp'
-    if path_to_add not in sys.path:
-        sys.path.append(path_to_add)
-
-    # 특정 경로 제거
-    path_to_remove = '/mnt/home/zuwang/workspace/ddpo-pytorch'
-    if path_to_remove in sys.path:
-        sys.path.remove(path_to_remove)
 
     parser = argparse.ArgumentParser(description='Solve TSP with path constraint.')
     parser.add_argument('--num_cities', default=20, type=int, help='Number of cities in the TSP instance')
@@ -35,9 +26,9 @@ if __name__=='__main__':
     args = parser.parse_args()
     
     # Define path
-    root_path = '/mnt/home/zuwang/workspace/diffusion_rl_tsp'
+    root_path = './'
     data_path = os.path.join(root_path, 'data')
-    input_path = f'/mnt/home/zuwang/workspace/diffusion_priors/tsp/data/tsp{args.num_cities}_train_concorde.txt'
+    input_path = f'./data/tsp{args.num_cities}_train_concorde.txt'
     output_path = os.path.join(data_path, f'tsp{args.num_cities}_path_constraint_for_train.txt')
     problem_path = os.path.join(root_path, 'test/tsp_problem.tsp')
     img_path = os.path.join(root_path, f'images/path_constraint_{args.num_cities}')

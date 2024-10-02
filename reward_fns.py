@@ -91,9 +91,9 @@ def tsp_constraint():
         #     return False
 
         assert solved_tour[-1] == solved_tour[0], 'Tour not a cycle'
-        # assert not has_duplicates(solved_tour[:-1]), 'Tour not Hamiltonian' # constraint 조건에서는 penalty 받는 형태로.. TODO: 더 좋은 방법 없을까?
+        # assert not has_duplicates(solved_tour[:-1]), 'Tour not Hamiltonian'
 
-        solved_cost = tsp_solver.evaluate(solved_tour) # TODO: hard / soft 구분
+        solved_cost = tsp_solver.evaluate(solved_tour)
         penalty_count = tsp_solver.count_constraints(solved_tour)
 
         return -np.array([solved_cost]), {

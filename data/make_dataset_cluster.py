@@ -11,15 +11,6 @@ from sklearn.cluster import KMeans
 import torch
 
 def main():
-    # 특정 경로 추가
-    path_to_add = '/mnt/home/zuwang/workspace/diffusion_rl_tsp'
-    if path_to_add not in sys.path:
-        sys.path.append(path_to_add)
-
-    # 특정 경로 제거
-    path_to_remove = '/mnt/home/zuwang/workspace/ddpo-pytorch'
-    if path_to_remove in sys.path:
-        sys.path.remove(path_to_remove)
         
     parser = argparse.ArgumentParser(description='Solve TSP with box constraints.')
     parser.add_argument('--num_cities', default=20, help='Number of cities in the TSP instance')
@@ -28,7 +19,7 @@ def main():
     args = parser.parse_args()
 
     # Define path
-    root_path = '/mnt/home/zuwang/workspace/diffusion_rl_tsp'
+    root_path = './'
     data_path = os.path.join(root_path, 'data')
     txt_path = os.path.join(data_path, f'tsp{args.num_cities}_cluster_constraint_test.txt')
     problem_path = os.path.join(root_path, 'problem/tsp_problem.tsp')

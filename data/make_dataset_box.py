@@ -34,15 +34,6 @@ def solve_tsp_instance(i, points, gt_tour, problem_path):
 
 if __name__ == '__main__':
     start_time = time.time()
-        # 특정 경로 추가
-    path_to_add = '/mnt/home/zuwang/workspace/diffusion_rl_tsp'
-    if path_to_add not in sys.path:
-        sys.path.append(path_to_add)
-
-    # 특정 경로 제거
-    path_to_remove = '/mnt/home/zuwang/workspace/ddpo-pytorch'
-    if path_to_remove in sys.path:
-        sys.path.remove(path_to_remove)
         
     # Get today's date
     today_date = datetime.today().strftime('%y%m%d')
@@ -54,7 +45,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Define path
-    root_path = '/mnt/home/zuwang/workspace/diffusion_rl_tsp'
+    root_path = './'
     data_path = os.path.join(root_path, 'data')
     txt_path = os.path.join(data_path, f'tsp{args.num_cities}_box_constraint_test_{today_date}.txt')
     problem_path = os.path.join(root_path, 'problem/tsp_problem.tsp')

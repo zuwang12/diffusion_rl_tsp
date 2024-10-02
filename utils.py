@@ -273,7 +273,7 @@ def do_intersect(p1, q1, p2, q2):
     
     return False
 
-# Function to check if adding a new edge will create an intersection : 현재까지 연결된 Edge(real_adj_mat) 기준으로 intersection (with (a, b)) 체크
+# Function to check if adding a new edge will create an intersection
 def check_for_intersection(a, b, real_adj_mat, points):
     for i in range(real_adj_mat.shape[0]):
         for j in range(i + 1, real_adj_mat.shape[0]):
@@ -282,7 +282,6 @@ def check_for_intersection(a, b, real_adj_mat, points):
                     return True
     return False
 
-# tour 기준으로 intersection (with (a, b)) 체크
 def would_create_intersection(tour, new_edge, points):
     a, b = new_edge
     for i in range(len(tour) - 1):

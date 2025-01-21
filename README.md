@@ -2,7 +2,7 @@
 
 This repository contains the code for **DDRL (Diffusion-Driven Reinforcement Learning)**, a novel framework that integrates diffusion models and reinforcement learning (RL) to solve the Traveling Salesman Problem (TSP). DDRL offers scalable, stable, and efficient solutions for both standard and constraint-based TSP instances.
 
-The code supports experiments as presented in the paper **"DDRL: A Diffusion-Driven Reinforcement Learning Approach for Enhanced TSP Solutions"** (currently under review for IJCAI 2025).
+The code supports experiments as presented in the paper **"DDRL: A Diffusion-Driven Reinforcement Learning Approach for Enhanced TSP Solutions"**
 
 ## Overview
 

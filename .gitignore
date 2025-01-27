@@ -1,6 +1,7 @@
 # files
 *.csv
 *.txt
+!test.txt
 *.ipynb
 *.res
 *.sol

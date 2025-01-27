@@ -17,7 +17,6 @@ def main():
     parser.add_argument("--max_iter", type=int, default=10)
     parser.add_argument("--save_freq", type=int, default=2)
     parser.add_argument("--run_name", type=str, default='2opt_test')
-    # 추가: sample_idx 범위 설정을 위한 인자 추가
     parser.add_argument("--start_idx", type=int, default=0)
     parser.add_argument("--end_idx", type=int, default=1280)
     args = parser.parse_args()
@@ -71,7 +70,6 @@ def main():
         if not (args.start_idx <= int(sample_idx) < args.end_idx):
             continue
         img, points, gt_tour, sample_idx, constraint = (tensor.squeeze(0) for tensor in (img, points, gt_tour, sample_idx, constraint))
-        # if int(sample_idx)>5:break
         if args.constraint_type=='box':
             distance_matrix, intersection_matrix = calculate_distance_matrix2(points, constraint)
             constraint = intersection_matrix

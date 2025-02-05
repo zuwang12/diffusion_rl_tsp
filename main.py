@@ -104,7 +104,7 @@ def main():
             prior_path = f'./ckpt/unet50_64_8.pth'
         else:
             prior_path = f'./ckpt/unet500_128_8.pth'
-        unet.load_state_dict(torch.load(prior_path))
+        unet.load_state_dict(torch.load(prior_path, map_location=device))
         print(f'num_cities : {config.num_cities}, prior : {prior_path}')
         
     unet.eval()

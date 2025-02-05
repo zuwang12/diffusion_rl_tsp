@@ -8,6 +8,11 @@ import torch.nn.functional as F
 from model.diffusion import GaussianDiffusion
 from scipy.spatial import ConvexHull
 from matplotlib.path import Path
+import matplotlib.pyplot as plt
+import cv2
+from multiprocessing import Pool
+import warnings
+from model.cython_merge.cython_merge import merge_cython
 
 
 # Set seed for reproducibility
@@ -18,9 +23,12 @@ torch.manual_seed(seed_value)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(seed_value)
 
-import numpy as np
-import matplotlib.pyplot as plt
-import cv2
+def is_valid(tour):
+    if tour[0]!=tour[-1]:
+        return False
+    if set(tour)!=set(np.arange(len(tour)-1)):
+        return False
+    return True
 
 def display_img(img, points, constraint_type='basic', constraint=None, tour=None, save_path = './test.png'):
     # Clip the values between -1 and 0
@@ -51,7 +59,7 @@ def display_img(img, points, constraint_type='basic', constraint=None, tour=None
                  tuple((points[tour[0] - 1][::-1] * (64 - 1)).astype(int)),
                  color=[0, 0, 0], thickness=1)
     
-    
+
     # Draw points and constraints based on constraint_type
     for i in range(len(points)):
         # Reverse coordinates (swap x and y)
@@ -215,80 +223,6 @@ def runlat(model, unet, STEPS, batch_size, device):
     
     gc.collect()
     torch.cuda.empty_cache()
-    
-def check_consecutive_pair(lst, a, b):
-    for i in range(len(lst) - 1):
-        if (lst[i] == a and lst[i + 1] == b) or (lst[i] == b and lst[i + 1] == a):
-            return True
-    return False
-
-def do_lines_intersect(p1, p2, q1, q2):
-    def ccw(A, B, C):
-        return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
-    return ccw(p1, q1, q2) != ccw(p2, q1, q2) and ccw(p1, p2, q1) != ccw(p1, p2, q2)
-
-# Helper function to determine the orientation of the ordered triplet (p, q, r)
-def orientation(p, q, r):
-    """
-    Determine the orientation of the triplet (p, q, r).
-    0 -> p, q and r are collinear
-    1 -> Clockwise
-    2 -> Counterclockwise
-    """
-    val = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
-    if val == 0:
-        return 0  # Collinear
-    return 1 if val > 0 else 2  # Clockwise or Counterclockwise
-
-# Helper function to check if point q lies on segment pr
-def on_segment(p, q, r):
-    """
-    Check if point q lies on segment pr.
-    """
-    return (q[0] <= max(p[0], r[0]) and q[0] >= min(p[0], r[0]) and
-            q[1] <= max(p[1], r[1]) and q[1] >= min(p[1], r[1]))
-
-# Helper function to check if two line segments (p1q1 and p2q2) intersect
-def do_intersect(p1, q1, p2, q2):
-    """
-    Check if line segments (p1q1) and (p2q2) intersect.
-    """
-    
-    o1 = orientation(p1, q1, p2)
-    o2 = orientation(p1, q1, q2)
-    o3 = orientation(p2, q2, p1)
-    o4 = orientation(p2, q2, q1)
-    
-    if o1 != o2 and o3 != o4:
-        return True
-    
-    if o1 == 0 and on_segment(p1, p2, q1):
-        return True
-    if o2 == 0 and on_segment(p1, q2, q1):
-        return True
-    if o3 == 0 and on_segment(p2, p1, q2):
-        return True
-    if o4 == 0 and on_segment(p2, q1, q2):
-        return True
-    
-    return False
-
-# Function to check if adding a new edge will create an intersection
-def check_for_intersection(a, b, real_adj_mat, points):
-    for i in range(real_adj_mat.shape[0]):
-        for j in range(i + 1, real_adj_mat.shape[0]):
-            if real_adj_mat[i, j] == 1:
-                if do_intersect(points[a], points[b], points[i], points[j]):
-                    return True
-    return False
-
-def would_create_intersection(tour, new_edge, points):
-    a, b = new_edge
-    for i in range(len(tour) - 1):
-        c, d = tour[i], tour[i + 1]
-        if do_intersect(points[a], points[b], points[c], points[d]):
-            return True
-    return False
 
 def construct_tsp_from_mst(adj_mat, real_adj_mat, dists, points, constraint_type = None, constraint = None):
     if constraint_type == 'box':
@@ -359,6 +293,183 @@ def write_tsplib_file(distance_matrix, filename, scale_factor=1000):
         for row in distance_matrix:
             f.write(" ".join(str(int(val * scale_factor)) for val in row) + "\n")
         f.write("EOF\n")
+
+def make_tours(adj_mat, np_points, edge_index_np, sparse_graph=False, parallel_sampling=1):
+    splitted_adj_mat = np.split(adj_mat, parallel_sampling, axis=0)
+
+    if not sparse_graph:
+        splitted_adj_mat = [
+            adj_mat[0] + adj_mat[0].T for adj_mat in splitted_adj_mat
+        ]
+    else:
+        splitted_adj_mat = [
+            scipy.sparse.coo_matrix(
+                (adj_mat, (edge_index_np[0], edge_index_np[1])),
+            ).toarray() + scipy.sparse.coo_matrix(
+                (adj_mat, (edge_index_np[1], edge_index_np[0])),
+            ).toarray() for adj_mat in splitted_adj_mat
+        ]
+
+    splitted_points = [
+        np_points for _ in range(parallel_sampling)
+    ]
+
+    if np_points.shape[0] > 1000 and parallel_sampling > 1:
+        with Pool(parallel_sampling) as p:
+            results = p.starmap(
+                cython_merge,
+                zip(splitted_points, splitted_adj_mat),
+            )
+    else:
+        results = [
+            cython_merge(_np_points, _adj_mat) for _np_points, _adj_mat in zip(splitted_points, splitted_adj_mat)
+        ]
+
+    splitted_real_adj_mat, splitted_merge_iterations = zip(*results)
+
+    tours = []
+    for i in range(parallel_sampling):
+        tour = [0]
+        while len(tour) < splitted_adj_mat[i].shape[0] + 1:
+            n = np.nonzero(splitted_real_adj_mat[i][tour[-1]])[0]
+            if len(tour) > 1:
+                n = n[n != tour[-2]]
+            tour.append(n.max())
+        tours.append(tour)
+
+    merge_iterations = np.mean(splitted_merge_iterations)
+    return tours, merge_iterations
+
+def cython_merge(points, adj_mat):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        real_adj_mat, merge_iterations = merge_cython(points.astype("double"), adj_mat.astype("double"))
+        real_adj_mat = np.asarray(real_adj_mat)
+    return real_adj_mat, merge_iterations
+
+def batched_two_opt_torch(points, tour, max_iterations=1000, device="cpu"):
+    iterator = 0
+    tour = tour.copy()
+
+    with torch.inference_mode():
+        cuda_points = torch.from_numpy(points).to(device)
+        cuda_tour = torch.from_numpy(tour).to(device)
+        batch_size = cuda_tour.shape[0]
+        min_change = -1.0
+
+        while min_change < 0.0:
+            points_i = cuda_points[cuda_tour[:, :-1].reshape(-1)].reshape((batch_size, -1, 1, 2))
+            points_j = cuda_points[cuda_tour[:, :-1].reshape(-1)].reshape((batch_size, 1, -1, 2))
+            points_i_plus_1 = cuda_points[cuda_tour[:, 1:].reshape(-1)].reshape((batch_size, -1, 1, 2))
+            points_j_plus_1 = cuda_points[cuda_tour[:, 1:].reshape(-1)].reshape((batch_size, 1, -1, 2))
+
+            A_ij = torch.sqrt(torch.sum((points_i - points_j) ** 2, axis=-1))
+            A_i_plus_1_j_plus_1 = torch.sqrt(torch.sum((points_i_plus_1 - points_j_plus_1) ** 2, axis=-1))
+            A_i_i_plus_1 = torch.sqrt(torch.sum((points_i - points_i_plus_1) ** 2, axis=-1))
+            A_j_j_plus_1 = torch.sqrt(torch.sum((points_j - points_j_plus_1) ** 2, axis=-1))
+
+            change = A_ij + A_i_plus_1_j_plus_1 - A_i_i_plus_1 - A_j_j_plus_1
+            valid_change = torch.triu(change, diagonal=2)
+
+            min_change = torch.min(valid_change)
+            flatten_argmin_index = torch.argmin(valid_change.reshape(batch_size, -1), dim=-1)
+            min_i = torch.div(flatten_argmin_index, len(points), rounding_mode='floor')
+            min_j = torch.remainder(flatten_argmin_index, len(points))
+
+            if min_change < -1e-6:
+                for i in range(batch_size):
+                    cuda_tour[i, min_i[i] + 1:min_j[i] + 1] = torch.flip(cuda_tour[i, min_i[i] + 1:min_j[i] + 1], dims=(0,))
+                iterator += 1
+            else:
+                break
+
+            if iterator >= max_iterations:
+                break
+
+        tour = cuda_tour.cpu().numpy()
+    
+    return tour, iterator
+
+
+
+
+
+######################################## constraint function ########################################
+    
+def check_consecutive_pair(lst, a, b):
+    for i in range(len(lst) - 1):
+        if (lst[i] == a and lst[i + 1] == b) or (lst[i] == b and lst[i + 1] == a):
+            return True
+    return False
+
+def do_lines_intersect(p1, p2, q1, q2):
+    def ccw(A, B, C):
+        return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
+    return ccw(p1, q1, q2) != ccw(p2, q1, q2) and ccw(p1, p2, q1) != ccw(p1, p2, q2)
+
+# Helper function to determine the orientation of the ordered triplet (p, q, r)
+def orientation(p, q, r):
+    """
+    Determine the orientation of the triplet (p, q, r).
+    0 -> p, q and r are collinear
+    1 -> Clockwise
+    2 -> Counterclockwise
+    """
+    val = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
+    if val == 0:
+        return 0  # Collinear
+    return 1 if val > 0 else 2  # Clockwise or Counterclockwise
+
+# Helper function to check if point q lies on segment pr
+def on_segment(p, q, r):
+    """
+    Check if point q lies on segment pr.
+    """
+    return (q[0] <= max(p[0], r[0]) and q[0] >= min(p[0], r[0]) and
+            q[1] <= max(p[1], r[1]) and q[1] >= min(p[1], r[1]))
+
+# Helper function to check if two line segments (p1q1 and p2q2) intersect
+def do_intersect(p1, q1, p2, q2):
+    """
+    Check if line segments (p1q1) and (p2q2) intersect.
+    """
+    
+    o1 = orientation(p1, q1, p2)
+    o2 = orientation(p1, q1, q2)
+    o3 = orientation(p2, q2, p1)
+    o4 = orientation(p2, q2, q1)
+    
+    if o1 != o2 and o3 != o4:
+        return True
+    
+    if o1 == 0 and on_segment(p1, p2, q1):
+        return True
+    if o2 == 0 and on_segment(p1, q2, q1):
+        return True
+    if o3 == 0 and on_segment(p2, p1, q2):
+        return True
+    if o4 == 0 and on_segment(p2, q1, q2):
+        return True
+    
+    return False
+
+# Function to check if adding a new edge will create an intersection
+def check_for_intersection(a, b, real_adj_mat, points):
+    for i in range(real_adj_mat.shape[0]):
+        for j in range(i + 1, real_adj_mat.shape[0]):
+            if real_adj_mat[i, j] == 1:
+                if do_intersect(points[a], points[b], points[i], points[j]):
+                    return True
+    return False
+
+
+def would_create_intersection(tour, new_edge, points):
+    a, b = new_edge
+    for i in range(len(tour) - 1):
+        c, d = tour[i], tour[i + 1]
+        if do_intersect(points[a], points[b], points[c], points[d]):
+            return True
+    return False
 
 ############################### box constraint ###############################
 # Function to check if the tour intersects with the box
@@ -579,6 +690,37 @@ def check_tour_intersections(tour, points):
             if do_intersect(p1, q1, p2, q2):
                 return True
     return False
+
+def calculate_indicator_matrix4(points, pairs):
+    """ 1 : not defined connection, 0 : pre defined connection
+    This function computes the intersection matrix based on a list of pairs of nodes
+    that must be connected. If two nodes are part of a pair, the corresponding matrix 
+    element is 0 (indicating they should be connected); otherwise, it is 1 (indicating 
+    no connection). The matrix is square and symmetric, where each row and column 
+    represents a node, and matrix[i, j] indicates whether nodes i and j should be connected 
+    (0) or not (1). The diagonal is set to 1, ensuring that a node is not connected to itself.
+
+    Parameters:
+    - pairs (numpy.ndarray): 1D array containing pairs of node indices that must be connected.
+                             The length of this array is always even.
+
+    Returns:
+    - intersection_matrix (numpy.ndarray): A 2D array where elements are 0 if the corresponding 
+      nodes must be connected, and 1 if they must not be connected.
+    """
+    
+    num_points = points.shape[0]
+    intersection_matrix = np.ones((num_points, num_points))
+    
+    for i in range(0, len(pairs), 2):
+        node1 = int(pairs[i])
+        node2 = int(pairs[i + 1])
+        
+        intersection_matrix[node1, node2] = 0
+        intersection_matrix[node2, node1] = 0
+    
+    return intersection_matrix
+
 ############################### path constraint ###############################
 
 #################################### cluster constraint ####################################
@@ -625,5 +767,35 @@ def check_cluster_degree_violations(cluster, solved_tour):
             violations += 1
 
     return violations
+
+def calculate_indicator_matrix3(points, cluster):
+    """ 1 : different cluster, 0 : same cluster
+    Given the cluster array, generate an intersection matrix.
+    
+    The input `cluster` array represents the cluster number each data point belongs to.
+    The output intersection matrix will have 0s where points belong to the same cluster 
+    and 1s where points belong to different clusters.
+
+    Parameters:
+    ----------
+    cluster : numpy.ndarray
+        A 1D array where each element represents the cluster number of a data point.
+    
+    Returns:
+    -------
+    intersection_matrix : numpy.ndarray
+        A 2D matrix of shape (n, n), where n is the length of the `cluster` array.
+        0 indicates the points belong to the same cluster, and 1 indicates they belong to different clusters.
+    """
+    
+    num_points = points.shape[0]
+    intersection_matrix = np.zeros((num_points, num_points), dtype=int)
+    
+    for i in range(num_points):
+        for j in range(num_points):
+            if cluster[i] != cluster[j]:
+                intersection_matrix[i, j] = 1
+    
+    return intersection_matrix
 
 #################################### cluster constraint ####################################

@@ -25,9 +25,10 @@ def load_config():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_name", type=str, default="tsp", help="which training config to use")
     parser.add_argument("--start_idx", type=int, default=0, help="start index for iteration")
-    parser.add_argument("--end_idx", type=int, default=1280, help="end index for iteration")
-    parser.add_argument("--num_cities", type=int, default=20, help="number of cities")
-    parser.add_argument("--max_iter", type=int, default=5, help="max iteration of 2opt at N=200")
+    parser.add_argument("--end_idx", type=int, default=128, help="end index for iteration")
+    parser.add_argument("--num_cities", type=int, default=500, help="number of cities")
+    parser.add_argument("--img_size", type=int, default=128, help="number of cities")
+    parser.add_argument("--max_iter", type=int, default=1000, help="max iteration of 2opt at N=200")
     parser.add_argument("--num_epochs", type=int, default=1, help="number of epoch")
     parser.add_argument("--num_inner_epochs", type=int, default=1, help="number of inner epoch")
     parser.add_argument("--num_init_sample", type=int, default=1, help="number of initial sample")
@@ -42,6 +43,7 @@ def load_config():
     config.start_idx = args.start_idx
     config.end_idx = args.end_idx
     config.num_cities = args.num_cities
+    config.img_size = args.img_size
     config.max_iter = args.max_iter
     config.run_name = args.run_name
     config.num_epochs = args.num_epochs
@@ -133,8 +135,6 @@ def main():
     sample_idxes, solved_costs, gt_costs, final_gaps, epochs, inner_epochs, basic_costs, penalty_counts = [], [], [], [], [], [], [], []
 
     for img, points, gt_tour, sample_idx, constraint in tqdm_partial(test_dataloader):
-        if int(sample_idx) not in [693, 243, 285, 1032, 123, 279, 965, 1037, 1090, 271, 80, 269, 1122, 112, 1229, 209, 641, 276, 1140, 1147, 521, 72, 986, 1163, 577, 877, 730, 442, 49, 706, 925, 943, 751, 1259, 583, 1023, 934, 676, 1277, 780, 242, 1082, 59, 250, 26, 538, 921, 429, 1191, 321, 345, 853, 300, 913, 496, 412, 1255, 783, 147, 308, 1088, 587, 322, 1093, 626, 991, 154, 594, 214, 1221, 912, 81, 530, 168, 960, 739, 767, 245, 459, 1258, 318, 615, 343, 335, 418, 680, 440, 142, 900, 548, 830, 567, 876, 1113, 1096, 152, 296, 452, 27, 592, 782]:
-            continue
         points, gt_tour = points.cpu().numpy()[0], gt_tour.cpu().numpy()[0]
         if config.constraint_type != 'basic':
             constraint = constraint.cpu().numpy()[0]

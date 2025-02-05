@@ -5,6 +5,7 @@ import numpy as np
 import cv2
 from copy import deepcopy
 import random
+from tqdm import tqdm
 
 class TSPDataset(torch.utils.data.Dataset):
     def __init__(self, data_file, img_size, constraint_type='basic', show_position=False, point_radius=1, point_color=1, point_circle=True, line_thickness=2, line_color=0.5, box_color=0.75, max_points=100):
@@ -167,21 +168,38 @@ class Model_x0(nn.Module):
     def compute_edge_images(self, points, img_query):
         # Pre-compute edge images
         self.img_query = img_query
-        self.edge_images = []
-        for i in range(points.shape[0]):
-            node_edges = []
-            for j in range(points.shape[0]):
-                edge_img = np.zeros((self.img_size, self.img_size)) # (64, 64)
-                cv2.line(edge_img, 
-                         tuple(((self.img_size-1)*points[i,::-1]).astype(int)), # city position in 50x50 ex) (2, 39)
-                         tuple(((self.img_size-1)*points[j,::-1]).astype(int)), 
-                         color=self.line_color, thickness=self.line_thickness)
-                edge_img = torch.from_numpy(edge_img).float().to(self.latent.device)
+        num_nodes = points.shape[0]
+        
+        self.edge_images = torch.zeros((num_nodes, num_nodes, self.img_size, self.img_size), dtype=torch.float32, device=self.latent.device)
 
-                node_edges.append(edge_img)
-            node_edges = torch.stack(node_edges, dim=0)
-            self.edge_images.append(node_edges)
-        self.edge_images = torch.stack(self.edge_images, dim=0) # (50, 50, 64, 64) -> all edge connection image for each city
+        scaled_points = ((self.img_size - 1) * points[:, ::-1]).astype(int)
+
+        for i in range(num_nodes):
+            for j in range(i + 1, num_nodes):
+                edge_img = np.zeros((self.img_size, self.img_size), dtype=np.uint8)
+                cv2.line(edge_img, 
+                        tuple(scaled_points[i]), 
+                        tuple(scaled_points[j]), 
+                        color=self.line_color, thickness=self.line_thickness)
+
+                edge_tensor = torch.from_numpy(edge_img).float().to(self.latent.device)
+                self.edge_images[i, j] = edge_tensor
+                self.edge_images[j, i] = edge_tensor
+        # self.edge_images = []
+        # for i in range(points.shape[0]):
+        #     node_edges = []
+        #     for j in range(points.shape[0]):
+        #         edge_img = np.zeros((self.img_size, self.img_size)) # (64, 64)
+        #         cv2.line(edge_img, 
+        #                  tuple(((self.img_size-1)*points[i,::-1]).astype(int)), # city position in 50x50 ex) (2, 39)
+        #                  tuple(((self.img_size-1)*points[j,::-1]).astype(int)), 
+        #                  color=self.line_color, thickness=self.line_thickness)
+        #         edge_img = torch.from_numpy(edge_img).float().to(self.latent.device)
+
+        #         node_edges.append(edge_img)
+        #     node_edges = torch.stack(node_edges, dim=0)
+        #     self.edge_images.append(node_edges)
+        # self.edge_images = torch.stack(self.edge_images, dim=0) # (50, 50, 64, 64) -> all edge connection image for each city
                         
     def encode(self, sampling=False):
         # Compute permutation matrix

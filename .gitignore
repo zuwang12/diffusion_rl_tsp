@@ -30,3 +30,4 @@ model/cython_merge/cython_merge.cpython-310-x86_64-linux-gnu.so
 .gitignore
 model/cython_merge/build/temp.linux-x86_64-cpython-310/cython_merge.o
 model/cython_merge/README.md
+model/cython_merge/build/temp.linux-x86_64-3.10/cython_merge.o

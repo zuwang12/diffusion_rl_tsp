@@ -132,7 +132,7 @@ def main():
     )
     # test_dataloader = accelerator.prepare(test_dataloader)
 
-    sample_idxes, solved_costs, gt_costs, final_gaps, epochs, inner_epochs, basic_costs, penalty_counts = [], [], [], [], [], [], [], []
+    sample_idxes, solved_costs, gt_costs, final_gaps, epochs, inner_epochs, basic_costs, penalty_counts, solved_tours = [], [], [], [], [], [], [], [], []
 
     for img, points, gt_tour, sample_idx, constraint in tqdm_partial(test_dataloader):
         points, gt_tour = points.cpu().numpy()[0], gt_tour.cpu().numpy()[0]
@@ -287,6 +287,7 @@ def main():
                         final_gap = gap
                         final_basic_cost = basic_cost
                         final_penalty_count = penalty_count
+                        final_solved_tour = solved_tour
 
         sample_idxes.append(int(sample_idx))
         solved_costs.append(final_solved_cost)
@@ -296,6 +297,7 @@ def main():
         inner_epochs.append(best_inner_epoch)
         basic_costs.append(final_basic_cost)
         penalty_counts.append(final_penalty_count)
+        solved_tours.append(final_solved_tour)
 
         del loss
         gc.collect()
@@ -311,6 +313,7 @@ def main():
                 'basic_cost': basic_costs,
                 'penalty_count': penalty_counts,
                 'final_gap(%)': final_gaps,
+                'solved_tour' : solved_tours,
             })
             if config.save_result:
                 os.makedirs(f'./Results/{config.constraint_type}/{config.run_name}', exist_ok=True)
@@ -326,6 +329,7 @@ def main():
             'basic_cost': basic_costs,
             'penalty_count': penalty_counts,
             'final_gap(%)': final_gaps,
+            'solved_tour' : solved_tours,
         })
         if config.save_result:
             print('save result')

@@ -100,7 +100,13 @@ def main():
     ).to(device)
     
     if config.use_prior:
-        unet.load_state_dict(torch.load(f'./ckpt/unet50_64_8.pth', map_location=device))
+        if config.num_cities<=200:
+            prior_path = f'./ckpt/unet50_64_8.pth'
+        else:
+            prior_path = f'./ckpt/unet500_128_8.pth'
+        unet.load_state_dict(torch.load(prior_path))
+        print(f'num_cities : {config.num_cities}, prior : {prior_path}')
+        
     unet.eval()
     pipeline.unet = unet
     pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)

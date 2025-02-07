@@ -799,3 +799,26 @@ def calculate_indicator_matrix3(points, cluster):
     return intersection_matrix
 
 #################################### cluster constraint ####################################
+
+#################################### save ground truth from txt ####################################
+def compute_gt_cost(points, tour):
+    total_cost = 0.0
+    for i in range(len(tour) - 1):
+        total_cost += np.linalg.norm(points[tour[i] - 1] - points[tour[i + 1] - 1])
+    return total_cost
+
+def get_gt_df(input_txt, num_cities, output_dir="."):
+    gt_data = []
+    
+    with open(input_txt, 'r') as file:
+        lines = file.readlines()
+    
+    for idx, line in enumerate(lines):
+        parts = line.strip().split(" output ")
+        points = np.array([float(x) for x in parts[0].split()]).reshape(-1, 2)
+        tour = np.array([int(x) for x in parts[1].split()])
+        gt_cost = compute_gt_cost(points, tour)
+        gt_data.append([idx, gt_cost])
+    
+    df = pd.DataFrame(gt_data, columns=["sample_idx", "gt_cost"])
+    return df

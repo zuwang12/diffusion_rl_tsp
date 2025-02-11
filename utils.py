@@ -1,19 +1,20 @@
 import scipy
+import pandas as pd
 import numpy as np
 import math
 import gc
 import random
 import torch
 import torch.nn.functional as F
-from model.diffusion import GaussianDiffusion
 from scipy.spatial import ConvexHull
 from matplotlib.path import Path
 import matplotlib.pyplot as plt
 import cv2
 from multiprocessing import Pool
 import warnings
-from model.cython_merge.cython_merge import merge_cython
 
+from model.diffusion import GaussianDiffusion
+from model.cython_merge.cython_merge import merge_cython
 
 # Set seed for reproducibility
 seed_value = 2024
@@ -23,12 +24,120 @@ torch.manual_seed(seed_value)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(seed_value)
 
-def is_valid(tour):
-    if tour[0]!=tour[-1]:
-        return False
-    if set(tour)!=set(np.arange(len(tour)-1)):
-        return False
-    return True
+def load_tsp_data(data_path):
+    """
+    Load TSP data from a file and return points and ground-truth tours.
+    
+    Parameters:
+        data_path (str): Path to the TSP data file.
+        
+    Returns:
+        points (np.ndarray): Array of shape (num_samples, N, 2) representing node coordinates.
+        tours (np.ndarray): Array of shape (num_samples, N) representing ground-truth TSP tours.
+    """
+    points_list = []
+    tours_list = []
+    
+    with open(data_path, 'r') as file:
+        lines = file.readlines()
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Extract points
+            points = line.split(' output ')[0].split(' ')
+            points = np.array([[float(points[i]), float(points[i+1])] for i in range(0, len(points), 2)])
+            
+            # Extract tour
+            tour = line.split(' output ')[1].split(' ')
+            tour = np.array([int(t) for t in tour])
+            
+            points_list.append(points)
+            tours_list.append(tour)
+    
+    return np.array(points_list), np.array(tours_list)
+
+
+def draw_tour(tour, points, box = None, paths = None, cluster = None, show_constraint=False,
+              img_size=64, line_color = 0.5, line_thickness = 2, point_color = 1, point_circle = True, 
+              point_radius = 2, show_position = False, box_color = 0.75):
+    
+    img = np.zeros((img_size, img_size))
+    
+    cluster_colors = {
+        0: 0.9,    # Gray shade for cluster 0
+        1: 0.1,    # Gray shade for cluster 1
+        2: 0.8,    # Gray shade for cluster 2
+        3: 0.2,    # Gray shade for cluster 3
+        4: 0.7,    # Gray shade for cluster 4
+        5: 0.3,    # Gray shade for cluster 5
+        6: 0.6,    # Gray shade for cluster 6
+        7: 0.4     # Gray shade for cluster 7
+    }
+
+    # Rasterize lines
+    for i in range(tour.shape[0]-1):
+        if tour.min()==1:
+            from_idx = tour[i]-1
+            to_idx = tour[i+1]-1
+        elif tour.min()==0:
+            from_idx = tour[i]
+            to_idx = tour[i+1]
+        cv2.line(img, 
+                    tuple(((img_size-1)*points[from_idx,::-1]).astype(int)), 
+                    tuple(((img_size-1)*points[to_idx,::-1]).astype(int)), 
+                    color=line_color, thickness=line_thickness)
+
+    # Rasterize points
+    for i in range(points.shape[0]):
+        point_coords = tuple(((img_size-1)*points[i,::-1]).astype(int))
+        # Rasterize cluster condition
+        color = cluster_colors[cluster[i]] if cluster is not None else point_color
+
+        if point_circle:
+            cv2.circle(img, point_coords, 
+                        radius=point_radius, color=color, thickness=-1)
+        else:
+            row = round((img_size-1)*points[i,0])
+            col = round((img_size-1)*points[i,1])
+            img[row,col] = point_color
+            
+        # Conditionally add text to image
+        if show_position:
+            text = f'{i}_({points[i, 1]:.2f}, {points[i, 0]:.2f})'
+            cv2.putText(img, text, (point_coords[0] + 5, point_coords[1] - 5), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, color, 1, cv2.LINE_AA)
+    
+    # Rasterize box condition
+    if box is not None:
+        y_bottom = int(box[0] * (img_size - 1))
+        y_top = int(box[1] * (img_size - 1))
+        x_left = int(box[2] * (img_size - 1))
+        x_right = int(box[3] * (img_size - 1))
+        img[y_bottom:y_top, x_left:x_right] = box_color
+
+    # Rasterize path condition
+    if paths is not None:
+        path_pairs = []
+        for i in range(0, len(paths), 2):
+            path_pairs.append((int(paths[i]), int(paths[i+1])))
+
+        for path in path_pairs:
+            from_idx, to_idx = path
+            cv2.line(img, 
+                        tuple(((img_size - 1) * points[from_idx, ::-1]).astype(int)), 
+                        tuple(((img_size - 1) * points[to_idx, ::-1]).astype(int)), 
+                        line_color, thickness=line_thickness)  # Different color for added lines
+            if show_constraint:
+                cv2.line(img, 
+                        tuple(((img_size - 1) * points[from_idx, ::-1]).astype(int)), 
+                        tuple(((img_size - 1) * points[to_idx, ::-1]).astype(int)), 
+                        box_color, thickness=line_thickness)  # Different color for added lines
+
+    # Rescale image to [-1,1]
+    img = 2*(img-0.5)
+    return img
+
 
 def display_img(img, points, constraint_type='basic', constraint=None, tour=None, save_path = './test.png'):
     # Clip the values between -1 and 0
@@ -109,93 +218,6 @@ def display_img(img, points, constraint_type='basic', constraint=None, tour=None
     if save_path is not None:
         plt.savefig(save_path, format='png', bbox_inches='tight', pad_inches=0)
 
-class TSP_2opt:
-    def __init__(self, points, constraint_type, constraint = None):
-        self.points = points
-        self.dist_mat = scipy.spatial.distance_matrix(points, points)
-        self.constraint_type = constraint_type
-        if constraint_type == 'box':
-            self.constraint_matrix = constraint
-        elif constraint_type == 'path':
-            self.path_pairs = []
-            for i in range(0, len(constraint), 2):
-                self.path_pairs.append((int(constraint[i]), int(constraint[i+1])))
-            self.path = constraint
-        elif constraint_type == 'cluster':
-            self.cluster = constraint
-
-    def evaluate(self, route):
-        return sum(self.dist_mat[route[i], route[i + 1]] for i in range(len(route) - 1))
-
-    def count_constraints(self, route):
-        count = 0
-        if self.constraint_type == 'box':
-            for i in range(len(route) - 1):
-                if self.constraint_matrix[route[i], route[i + 1]] == 1:
-                    count += 1
-
-        if self.constraint_type == 'path':
-            for a, b in self.path_pairs:
-                if not check_consecutive_pair(route, a, b):
-                    count += 1
-                segment1 = (self.points[a], self.points[b])
-                for j in range(len(route) - 1):
-                    if bool(set([a, b]) & set([route[j], route[j + 1]])):
-                        continue
-                    segment2 = (self.points[route[j]], self.points[route[j + 1]])
-                    if do_lines_intersect(segment1[0], segment1[1], segment2[0], segment2[1]):
-                        count += 1
-
-        if self.constraint_type == 'cluster':
-            violations = check_cluster_degree_violations(self.cluster, route)
-            count += violations
-        return count
-
-    def is_valid_route(self, route):
-        for i in range(len(route)-1):
-            if self.constraint_matrix[route[i], route[i+1]] == 1:
-                return False
-        return True
-
-    def solve_2opt(self, route, max_iter = None):
-        assert route[0] == route[-1], 'Tour is not a cycle'
-
-        best = route
-        best_constraints_cnt = self.count_constraints(route)
-        best_cost = self.evaluate(best)
-        improved = True
-        steps = 0
-        while improved:
-            steps += 1
-            if max_iter is not None and steps == max_iter:
-                break
-            improved = False
-            for i in range(1, len(route) - 2):
-                if self.constraint_type == 'path' and route[i] in self.path:
-                    continue
-                for j in range(i + 1, len(route)):
-                    if j - i == 1:
-                        continue
-
-                    # Check if the edge (i, j) or (j, i) is in path_pairs
-                    if self.constraint_type == 'path' and route[j] in self.path:
-                        continue
-
-                    new_route = route[:]
-                    new_route[i:j] = route[j - 1:i - 1:-1]
-                    new_constraints_cnt = self.count_constraints(new_route)
-                    new_cost = self.evaluate(new_route)
-
-                    if (new_cost < best_cost) and (new_constraints_cnt <= best_constraints_cnt):
-                        if self.constraint_type != 'box' or self.is_valid_route(new_route):
-                            best_cost = new_cost
-                            best = new_route
-                            best_constraints_cnt = new_constraints_cnt
-                            improved = True
-
-            route = best
-        return best, steps
-
 def runlat(model, unet, STEPS, batch_size, device):
     opt = torch.optim.Adam(model.parameters(), lr=1, betas=(0, 0.9))
     scheduler = torch.optim.lr_scheduler.LinearLR(opt, start_factor=1, end_factor=0.1, total_iters=1000)
@@ -223,6 +245,74 @@ def runlat(model, unet, STEPS, batch_size, device):
     
     gc.collect()
     torch.cuda.empty_cache()
+
+def make_tours_greedy(adj_mat, points, dists, constraint_type='basic', constraint=None):
+    adj_mat += adj_mat.T
+    num_cities = adj_mat.shape[0]
+    components = np.zeros((num_cities,2)).astype(int)
+    components[:] = np.arange(num_cities)[...,None]
+    real_adj_mat = np.zeros_like(adj_mat)
+
+    np.seterr(divide='ignore', invalid='ignore')
+
+    if constraint_type == 'box':
+        constraint_matrix = constraint
+
+    if constraint_type == 'path':
+        path = constraint
+        for i in range(0, len(path), 2):
+            a, b = int(path[i]), int(path[i + 1])
+            real_adj_mat[a, b] = 1
+            ca = np.nonzero((components == a).sum(1))[0][0]
+            cb = np.nonzero((components == b).sum(1))[0][0]
+            cca = sorted(components[ca], key=lambda x: x == a)
+            ccb = sorted(components[cb], key=lambda x: x == b)
+            newc = np.array([[cca[0], ccb[0]]])
+            m, M = min(ca, cb), max(ca, cb)
+            components = np.concatenate([components[:m], components[m + 1:M], components[M + 1:], newc], 0)
+
+    if constraint_type == 'cluster':
+        cluster = constraint
+        selected_nodes = set()  # Track selected clusters
+
+    for edge in (-adj_mat/dists).flatten().argsort():
+        a, b = edge//num_cities, edge%num_cities
+        if a == b or (not (a in components and b in components)) or check_for_intersection(a, b, real_adj_mat, points):
+            continue
+        
+        if constraint_type == 'box':
+            if constraint_matrix[a][b] == 1:
+                continue
+
+        # Ensure only one node per cluster is selected
+        if constraint_type == 'cluster':
+            if cluster[a] in selected_nodes and cluster[b] in selected_nodes:
+                continue
+
+        ca = np.nonzero((components==a).sum(1))[0][0]
+        cb = np.nonzero((components==b).sum(1))[0][0]
+        if ca == cb:
+            continue
+        cca = sorted(components[ca],key=lambda x:x==a)
+        ccb = sorted(components[cb],key=lambda x:x==b)
+        newc = np.array([[cca[0],ccb[0]]]) # [34, 15]
+        m,M = min(ca,cb),max(ca,cb) # (15, 34)
+        real_adj_mat[a,b] = 1
+        components = np.concatenate([components[:m],components[m+1:M],components[M+1:],newc],0)
+
+        if constraint_type == 'cluster':
+            selected_nodes.add(cluster[a])
+            selected_nodes.add(cluster[b])
+
+        if len(components) == 1:
+            break
+
+    if len(components) == 1:
+        real_adj_mat[components[0, 1], components[0, 0]] = 1
+    real_adj_mat += real_adj_mat.T
+
+    tour = construct_tsp_from_mst(adj_mat, real_adj_mat, dists, points, constraint_type, constraint)
+    return tour
 
 def construct_tsp_from_mst(adj_mat, real_adj_mat, dists, points, constraint_type = None, constraint = None):
     if constraint_type == 'box':
@@ -294,7 +384,7 @@ def write_tsplib_file(distance_matrix, filename, scale_factor=1000):
             f.write(" ".join(str(int(val * scale_factor)) for val in row) + "\n")
         f.write("EOF\n")
 
-def make_tours(adj_mat, np_points, edge_index_np, sparse_graph=False, parallel_sampling=1):
+def make_tours(adj_mat, np_points, edge_index_np=None, sparse_graph=False, parallel_sampling=1):
     splitted_adj_mat = np.split(adj_mat, parallel_sampling, axis=0)
 
     if not sparse_graph:
@@ -390,9 +480,12 @@ def batched_two_opt_torch(points, tour, max_iterations=1000, device="cpu"):
     
     return tour, iterator
 
-
-
-
+def is_valid(tour):
+    if tour[0]!=tour[-1]:
+        return False
+    if set(tour)!=set(np.arange(len(tour)-1)):
+        return False
+    return True
 
 ######################################## constraint function ########################################
     

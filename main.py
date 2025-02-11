@@ -13,9 +13,13 @@ import pandas as pd
 import gc
 import os
 from copy import deepcopy
+import random 
+
 from model.unet import UNetModel
-from model.TSPModel import Model_x0, TSPDataset
-from utils import TSP_2opt, runlat, calculate_distance_matrix2
+from model.TSPModel import TSPDataset
+from model.TSP_Solver import TSP_2opt
+from model.TSP_X0 import Model_x0
+from utils import runlat, calculate_distance_matrix2, make_tours, batched_two_opt_torch
 import reward_fns
 from pipeline_with_logprob import pipeline_with_logprob
 from ddim_with_logprob import ddim_step_with_logprob
@@ -28,7 +32,7 @@ def load_config():
     parser.add_argument("--end_idx", type=int, default=128, help="end index for iteration")
     parser.add_argument("--num_cities", type=int, default=500, help="number of cities")
     parser.add_argument("--img_size", type=int, default=128, help="number of cities")
-    parser.add_argument("--max_iter", type=int, default=1000, help="max iteration of 2opt at N=200")
+    parser.add_argument("--max_iter", type=int, default=10000, help="max iteration of 2opt at N=200")
     parser.add_argument("--num_epochs", type=int, default=1, help="number of epoch")
     parser.add_argument("--num_inner_epochs", type=int, default=1, help="number of inner epoch")
     parser.add_argument("--num_init_sample", type=int, default=1, help="number of initial sample")
@@ -52,7 +56,21 @@ def load_config():
     config.constraint_type = args.constraint_type
     return config
 
+def set_seed(config):
+    seed = config.seed
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if config.deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
+
 def main():
+    start_time = time.time()
+    print("Starting script execution...")
     # accelerator = Accelerator(mixed_precision='fp16')  # Enable mixed precision with fp16
     date_per_type = {
         'basic': '',
@@ -61,6 +79,7 @@ def main():
         'cluster': '240721',
     }
     config = load_config()
+    set_seed(config)
     tqdm_partial = partial(tqdm.tqdm, dynamic_ncols=True)
     now = time.strftime('%y%m%d_%H%M%S')
     if config.run_name is None:
@@ -77,13 +96,6 @@ def main():
         config.result_file_name = f'ours_tsp{config.num_cities}_{config.constraint_type}_constraint_{config.start_idx}_{config.end_idx}.csv'
     print(json.dumps(config, indent=4))
     print(f'Result file : ./Results/{config.constraint_type}/{config.run_name}/{config.result_file_name}')
-    
-    np.random.seed(config.seed)
-    torch.manual_seed(config.seed)
-    torch.cuda.manual_seed_all(config.seed)
-    if config.deterministic:
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
     
     num_train_timesteps = int(config.num_steps * config.timestep_fraction)
     pipeline = StableDiffusionPipeline.from_pretrained(config.model, revision=config.revision)
@@ -133,14 +145,14 @@ def main():
         test_dataset, 
         batch_size=config.batch_size_sample, 
         shuffle=False,
-        pin_memory=True,  # Use pin_memory to speed up data transfer to GPU
-        num_workers=os.cpu_count() // 2     # Adjust based on your CPU capability
+        pin_memory=True,
+        num_workers=os.cpu_count() // 2
     )
     # test_dataloader = accelerator.prepare(test_dataloader)
 
     sample_idxes, solved_costs, gt_costs, final_gaps, epochs, inner_epochs, basic_costs, penalty_counts, solved_tours = [], [], [], [], [], [], [], [], []
 
-    for img, points, gt_tour, sample_idx, constraint in tqdm_partial(test_dataloader):
+    for img, points, gt_tour, sample_idx, constraint in tqdm_partial(test_dataloader, desc="Optimize test samples"):
         points, gt_tour = points.cpu().numpy()[0], gt_tour.cpu().numpy()[0]
         if config.constraint_type != 'basic':
             constraint = constraint.cpu().numpy()[0]
@@ -160,6 +172,10 @@ def main():
             xT=xT
         ).to(device)
         model.eval()
+        
+        img_query = torch.zeros_like(img)
+        img_query[img == 1] = 1
+        model.compute_edge_images(points=points, img_query=img_query)
 
         optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -178,12 +194,8 @@ def main():
 
         solver = TSP_2opt(points, constraint_type=config.constraint_type, constraint=constraint)
         gt_cost = solver.evaluate([i - 1 for i in gt_tour])
-        img_query = torch.zeros_like(img)
-        img_query[img == 1] = 1
-        model.compute_edge_images(points=points, img_query=img_query)
 
         dists = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=-1)
-
         reward_fn = getattr(reward_fns, config.reward_type)()
         final_solved_cost = 10**10
         final_gap = 0
@@ -192,7 +204,7 @@ def main():
             num_sample = config.num_init_sample if epoch == 0 else 1
             samples = []
             best_reward = -10**10
-            for _ in range(num_sample):
+            for init_sample_idx in range(num_sample):
                 if epoch == 0:
                     model.reset()
                     if config.use_plug_and_play:
@@ -214,8 +226,10 @@ def main():
 
                 if config.constraint_type == 'box':
                     constraint = intersection_matrix
+
+                adj_mat = model.get_adj_mat()
                 rewards = torch.as_tensor(
-                    reward_fn(points, model.latent, dists, config.constraint_type, constraint, config.max_iter)[0],
+                    reward_fn(points, adj_mat, dists, config.constraint_type, constraint, config.max_iter)[0],
                     device=device
                 )
 
@@ -257,7 +271,7 @@ def main():
                 samples_batched = {k: v.reshape(-1, config.batch_size_train, *v.shape[1:]) for k, v in samples.items()}
                 samples_batched = [dict(zip(samples_batched, x)) for x in zip(*samples_batched.values())]
 
-                for sample in samples_batched:
+                for batch_idx, sample in enumerate(samples_batched): # TODO: check batch learning
                     for j in range(num_train_timesteps):
                         # with accelerator.autocast():
                         noise_pred = unet(sample["latents"][:, j], sample["timesteps"][:, j])
@@ -281,7 +295,8 @@ def main():
                         loss.backward()
                         # accelerator.backward(loss)
                         optimizer.step()
-                    output = reward_fn(points, model.latent, dists, config.constraint_type, constraint=constraint, max_iter = config.max_iter)[1]
+                    adj_mat = model.get_adj_mat()
+                    output = reward_fn(points, adj_mat, dists, config.constraint_type, constraint=constraint, max_iter = config.max_iter)[1]
 
                     solved_tour, basic_cost, penalty_count = output['solved_tour'], output['basic_cost'], output['penalty_count']
                     solved_cost = basic_cost + config.penalty_const * penalty_count 
@@ -342,5 +357,12 @@ def main():
             os.makedirs(f'./Results/{config.constraint_type}/{config.run_name}', exist_ok=True)
             result_df.to_csv(f'./Results/{config.constraint_type}/{config.run_name}/{config.result_file_name}', index=False)
 
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+
+    hours, rem = divmod(elapsed_time, 3600)
+    minutes, seconds = divmod(rem, 60)
+    print(f"Total execution time: {int(hours):02}:{int(minutes):02}:{int(seconds):02}")
+    
 if __name__ == '__main__':
     main()
